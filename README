@@ -1,0 +1,6 @@
+track_maker is a tool to view a time-series of radar images and create track
+files from the features identified by the user.
+
+Needs matplotlib, BRadar, and ZigZag (and maybe others...)
+
+Copyright 2011 - BSD Licensed
