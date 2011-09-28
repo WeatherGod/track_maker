@@ -56,6 +56,7 @@ class RadarCache(object) :
         """
         advance or step back the cache if needed, and adjust the index
         """
+        filename = self._filenames[self._currIndex]
         # are we on the right edge of the cache?
         if self._cacheIndex >= len(self._cacher) :
             # is the cache at the maximum size?
@@ -64,7 +65,7 @@ class RadarCache(object) :
                 self._cacheIndex -= 1
 
             # add an item to the right edge of the cache
-            self._cacher.append(LoadRastRadar(self._filenames[self._currIndex]))
+            self._cacher.append(LoadRastRadar(filename))
 
 
         # are we on the left edge of the cache?
@@ -74,8 +75,7 @@ class RadarCache(object) :
                 self._cacher.pop()
 
             # add an item to the left edge of the cache
-            self._cacher.insert(0, LoadRastRadar(
-                                    self._filenames[self._currIndex]))
+            self._cacher.insert(0, LoadRastRadar(filename))
             self._cacheIndex += 1
 
 
@@ -195,9 +195,14 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
     for index in labels :
         p = GetBoundary(reslabels, index)
 
-        if len(p) < 10 :
-            # Not enough points to work with
-            continue
+        if len(p) == 0 :
+            print "EMPTY!"
+        if len(p) == 1 :
+            print "Near Empty!"
+
+        #if len(p) < 10 :
+        #    # Not enough points to work with
+        #    continue
 
         coords = np.array([(ygrid[pnt[0], pnt[1]],
                             xgrid[pnt[0], pnt[1]]) for pnt in p])
@@ -310,6 +315,24 @@ class RadarDisplay(object) :
                 # Update the window
                 self.fig.canvas.draw()
 
+        elif event.key == 'r' :
+            # Recalculate ellipsoids
+            for ellip in self._ellipses[self.frameIndex] :
+                ellip.remove()
+            self._ellipses[self.frameIndex] = None
+            self._update_frame()            
+            self.fig.canvas.draw()
+        elif event.key == 'c' :
+            # Completely remove the points for this frame
+            for ellip in self._ellipses[self.frameIndex] :
+                ellip.remove()
+            self._ellipses[self.frameIndex] = None
+            for cent in self._centers[self.frameIndex] :
+                cent.remove()
+            self._centers[self.frameIndex] = []
+            self._update_frame()
+            self.fig.canvas.draw()
+
     def _clear_frame(self, frame=None) :
         if frame is None :
             frame = self.frameIndex
@@ -322,6 +345,39 @@ class RadarDisplay(object) :
         # Set the frame's center points to invisible
         for cent in self._centers[frame] :
             cent.set_visible(False)
+
+    def get_clusters(self) :
+        dataset = self.radarData.curr()
+        data = dataset['vals'][0]
+
+        flat_data = data[data >= -20]
+
+        clustLabels = np.empty(data.shape, dtype=int)
+        clustLabels[:] = -1
+
+        if np.nanmin(flat_data) == np.nanmax(flat_data) :
+            # can't cluster data with no change
+            return clustLabels, 0
+
+        bins = np.linspace(np.nanmin(flat_data),
+                           np.nanmax(flat_data), 2**8)
+        data_digitized = np.digitize(data.flat, bins[::-1])
+        data_digitized.shape = data.shape
+        data_digitized = data_digitized.astype('uint8')
+
+        markers = np.zeros(data.shape, dtype=int)
+        markers[np.isnan(data) | (data < -20)] = -1
+
+        for index, cent in enumerate(self._centers[self.frameIndex]) :
+            x_index = self.xs[0].searchsorted(cent.center[0])
+            y_index = self.ys[:, 0].searchsorted(cent.center[1])
+            markers[y_index, x_index] = index + 1
+
+        ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
+        #print "min label:", clustLabels.min(), " max label:", clustLabels.max()
+        clustCnt = len(self._centers[self.frameIndex])
+        #print "clust count:", clustCnt
+        return clustLabels, clustCnt
 
 
     def _update_frame(self, lastFrame=None) :
@@ -340,9 +396,9 @@ class RadarDisplay(object) :
 
         # Have ellipses been created yet for this frame?
         if self._ellipses[self.frameIndex] is None :
-            clustLabels, clustCnt = GetClusters(data['vals'][0])
+            clustLabels, clustCnt = self.get_clusters()
             self._ellipses[self.frameIndex] = FitEllipses(clustLabels,
-                                                  range(1, clustCnt+1),
+                                                  range(1, clustCnt + 1),
                                                   self.xs, self.ys)
 
             for ellip in self._ellipses[self.frameIndex] :
