@@ -2,7 +2,7 @@
 
 import matplotlib.pyplot as plt
 from matplotlib.collections import EllipseCollection
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Ellipse, Circle
 #from mpl_toolkits.basemap import Basemap
 
 import ZigZag.TrackFileUtils as TrackFileUtils
@@ -208,96 +208,166 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
         heights.append(b)                       # Height
         angles.append(np.rad2deg(t))            # Rotation
 
-    return [Ellipse(xy, w, h, a, fc='none', lw=5) for xy, w, h, a in
+    return [Ellipse(xy, w, h, a, lw=2) for xy, w, h, a in
                     zip(offsets, widths, heights, angles)]
-    
+
+class RadarDisplay(object) :
+    _increms = {'left': -1, 'right': 1}
+    def __init__(self, volume, tracks, falarms, radarFiles) :
+        """
+        Create an interactive display for creating track data
+        from radar data.
+        """
+        frameDiff = len(radarFiles) - len(volume['volume_data'])
+        if frameDiff < 0 :
+            raise ValueError("Previous session had more frames than available"
+                             "input data frames")
+        elif frameDiff > 0 :
+            newFrames = [{"volTime": np.nan,
+                          "frameNum": len(volume['volume_data']) + index,
+                          "stormCells": np.array([],
+                                                dtype=TrackUtils.corner_dtype)}
+                         for index in xrange(frameDiff)]
+            volume['volume_data'].extend(newFrames)
+            volume['frame_cnt'] = len(radarFiles)
+
+
+
+        minLat, minLon, maxLat, maxLon = ConsistentDomain(radarFiles)
+
+
+        self.fig = plt.figure()
+        self.ax = self.fig.gca()
+        self.radarData = RadarCache(radarFiles, 4)
+        
+        self._increm_funcs = {'left': self.radarData.prev,
+                              'right': self.radarData.next}
+
+        self._im = None
+        self._ellipses = [None] * len(self.radarData)
+        self._centers = [[] for i in xrange(len(self.radarData))]
+        for frameIndex in range(len(self.radarData)) :
+            cells = volume['volume_data'][frameIndex]['stormCells']
+            cents = self._centers[frameIndex]
+            for cellIndex in range(len(cells)) :
+                newPoint = self._new_point(cells['xLocs'][cellIndex],
+                                           cells['yLocs'][cellIndex])
+                newPoint.set_visible(False)
+                cents.append(newPoint)
+
+        self._tracks = [Line2D(track['xLocs'], track['yLocs'],
+                               color='grey', lw=2, marker='.', pickable=True)
+                        for track in tracks]
+        for track in self._tracks :
+            self.ax.add_artist(track)
+
+        self.volume = volume
+        self.tracks = tracks
+        self.falarms = falarms
+
+        self.frameIndex = 0
+        data = self.radarData.next()
+        lons, lats = np.meshgrid(data['lons'], data['lats'])
+        self.xs, self.ys = LonLat2Cart((minLon + maxLon)/2.0,
+                                       (minLat + maxLat)/2.0,
+                                        lons, lats)
+
+        self._update_frame()
+
+        self.ax.set_xlim(self.xs.min(), self.xs.max())
+        self.ax.set_ylim(self.ys.min(), self.ys.max())
+        self.ax.set_xlabel('X (km)')
+        self.ax.set_ylabel('Y (km)')
+
+        self.fig.canvas.mpl_connect('key_press_event', self.process_press)
+        self.fig.canvas.mpl_connect('button_release_event',
+                                     self.process_click)
+
+    def _new_point(self, x, y) :
+        newpoint = Circle((x, y), color='k', zorder=3, picker=True)
+        self.ax.add_artist(newpoint)
+        return newpoint
+
+    def process_click(self, event) :
+        if event.inaxes is self.ax :
+            newPoint = self._new_point(event.xdata, event.ydata)
+            self._centers[self.frameIndex].append(newPoint)
+            self.fig.canvas.draw()
+
+    def process_press(self, event) :
+        if event.key in RadarDisplay._increms :
+            if (0 <= (self.frameIndex + RadarDisplay._increms[event.key])
+                  <= (len(self.radarData) - 1)) :
+                lastFrame = self.frameIndex
+                self.frameIndex += RadarDisplay._increms[event.key]
+
+                # Update the radar data
+                self._increm_funcs[event.key]()
+
+                # Update the frame
+                self._update_frame(lastFrame)
+
+                # Update the window
+                self.fig.canvas.draw()
+
+    def _clear_frame(self, frame=None) :
+        if frame is None :
+            frame = self.frameIndex
+
+        # Set the frame's ellipses to invisible
+        if self._ellipses[frame] is not None :
+            for ellip in self._ellipses[frame] :
+                ellip.set_visible(False)
+
+        # Set the frame's center points to invisible
+        for cent in self._centers[frame] :
+            cent.set_visible(False)
+
+
+    def _update_frame(self, lastFrame=None) :
+        if lastFrame is not None :
+            self._clear_frame(lastFrame)
+
+        data = self.radarData.curr()
+
+        # Display current frame's radar image
+        if self._im is None :
+            self._im = MakeReflectPPI(data['vals'][0], self.ys, self.xs,
+                                      meth='im', ax=self.ax, colorbar=False,
+                                      axis_labels=False, zorder=0)
+        else :
+            self._im.set_data(data['vals'][0])
+
+        # Have ellipses been created yet for this frame?
+        if self._ellipses[self.frameIndex] is None :
+            clustLabels, clustCnt = GetClusters(data['vals'][0])
+            self._ellipses[self.frameIndex] = FitEllipses(clustLabels,
+                                                  range(1, clustCnt+1),
+                                                  self.xs, self.ys)
+
+            for ellip in self._ellipses[self.frameIndex] :
+                self.ax.add_artist(ellip)
+
+        # Set the ellipses for this frame to red
+        for ellip in self._ellipses[self.frameIndex] :
+            ellip.set_edgecolor('r')
+            ellip.set_facecolor('none')
+            ellip.set_visible(True)
+            ellip.set_zorder(3)
+
+        # Set centers for this frame to visible
+        for cent in self._centers[self.frameIndex] :
+            cent.set_visible(True)
+
+        theDateTime = datetime.utcfromtimestamp(data['scan_time'])
+        self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
+
+
+   
 
 def AnalyzeRadar(volume, tracks, falarms, radarFiles) :
-    minLat, minLon, maxLat, maxLon = ConsistentDomain(radarFiles)
 
-    fig = plt.figure()
-    ax = fig.gca()
-
-    radarData = RadarCache(radarFiles, 4)
-
-    def process_press(event) :
-        increms = {'left': -1, 'right': 1}
-        increm_funcs = {'left': radarData.prev, 'right': radarData.next}
-        if event.key in increms :
-            if (0 <= (process_press.frameIndex + increms[event.key])
-                  <= (len(radarData) - 1)) :
-                process_press.frameIndex += increms[event.key]
-                data = increm_funcs[event.key]()
-
-                clustLabels, clustCnt = GetClusters(data['vals'][0])
-                for ellip in process_press.curr_ellipses :
-                    ellip.remove()
-                process_press.curr_ellipses = FitEllipses(clustLabels,
-                                                          range(1, clustCnt),
-                                                          xs, ys)
-                for ellip in process_press.curr_ellipses :
-                    ellip.set_edgecolor('r')
-                    ax.add_artist(ellip)
-                im.set_data(data['vals'][0])
-
-                prev_data = radarData.peek_prev()
-                if process_press.prev_ellipses is not None :
-                    for ellip in process_press.prev_ellipses :
-                        ellip.remove()
-
-                if prev_data is not None :
-                    prevClusts, prevCnts = GetClusters(prev_data['vals'][0])
-                    ghost_im.set_data(np.ma.masked_array(prev_data['vals'][0],
-                                                        mask=(prevClusts == 0)))
-                    process_press.prev_ellipses = FitEllipses(prevClusts,
-                                                             range(1, prevCnts),
-                                                              xs, ys)
-                    for ellip in process_press.prev_ellipses :
-                        ellip.set_edgecolor('r')
-                        ellip.set_facecolor('k')
-                        ellip.set_alpha(0.5)
-                        ax.add_artist(ellip)
-                else :
-                    process_press.prev_ellipses = None
-                    ghost_im.set_data(np.ma.masked_array(data['vals'][0],
-                                                         mask=True))
-                theDateTime = datetime.utcfromtimestamp(data['scan_time'])
-                ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
-                fig.canvas.draw()
-
-    process_press.frameIndex = 0
-
-    data = radarData.next()
-
-    lons, lats = np.meshgrid(data['lons'], data['lats'])
-
-    xs, ys = LonLat2Cart((minLon + maxLon)/2.0, (minLat + maxLat)/2.0,
-                         lons, lats)
-
-    clustLabels, clustCnt = GetClusters(data['vals'][0])
-    process_press.curr_ellipses = FitEllipses(clustLabels, range(1, clustCnt),
-                                              xs, ys)
-    im = MakeReflectPPI(data['vals'][0], ys, xs,
-                        ax=ax, colorbar=False, axis_labels=False)
-    for ellip in process_press.curr_ellipses :
-        ellip.set_edgecolor('r')
-        ax.add_collection(ellip)
-    ghost_im = MakeReflectPPI(np.ma.masked_array(data['vals'][0],
-                                                 mask=True),
-                              ys, xs,
-                              ax=ax, colorbar=False, alpha=0.5,
-                              axis_labels=False)
-    ax.set_xlim(xs.min(), xs.max())
-    ax.set_ylim(ys.min(), ys.max())
-    ax.set_xlabel('X (km)')
-    ax.set_ylabel('Y (km)')
-    process_press.prev_ellipses = None
-    theDateTime = datetime.utcfromtimestamp(data['scan_time'])
-
-    ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
-
-    fig.canvas.mpl_connect('key_press_event', process_press)
-
+    rd = RadarDisplay(volume, tracks, falarms, radarFiles)
     plt.show()
 
 
@@ -324,7 +394,7 @@ def main(args) :
 
         sceneParams['simName'] = args.scenario
     else :
-        sceneParams = ParamsUtils.ReadSimulationParams(paramFile)
+        sceneParams = ParamUtils.ReadSimulationParams(paramFile)
 
 
     origTrackFile = os.path.join(dirName, sceneParams['simTrackFile'])
@@ -360,7 +430,8 @@ def SaveState(paramFile, params, volumeFile, volume,
               origTrackFile, filtTrackFile, tracks, falarms) :
     # Do I need to update the Params?
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
-                               volume['volume_data'])
+                               volume['volume_data'],
+                               path=os.path.basename(volumeFile))
     ParamUtils.SaveConfigFile(paramFile, params)
     TrackFileUtils.SaveTracks(origTrackFile, tracks, falarms)
     TrackFileUtils.SaveTracks(filtTrackFile, tracks, falarms)
