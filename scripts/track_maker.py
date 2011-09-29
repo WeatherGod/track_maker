@@ -18,6 +18,7 @@ from BRadar.maputils import LonLat2Cart
 import numpy as np
 import scipy.ndimage as ndimg
 import os.path
+from os import makedirs
 from datetime import datetime
 
 class RadarCache(object) :
@@ -204,7 +205,7 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
         h, k, a, b, t = FitEllipse(coords)
         ellips.append(Ellipse((h, k), a, b, np.rad2deg(t),
-                              lw=2, fc='none', ec='r'))
+                              lw=2, fc='none', ec='r', zorder=2))
 
     return ellips
 
@@ -338,10 +339,9 @@ class RadarDisplay(object) :
         self.fig.canvas.mpl_connect('key_press_event', self.process_key)
         #self.fig.canvas.mpl_connect('button_release_event',
         #                             self.process_click)
-        self._pressid = self.fig.canvas.mpl_connect('button_press_event',
-                                                    self.onpress)
-        self._pickid = self.fig.canvas.mpl_connect('pick_event',
-                                                   self.onpick)
+        self.fig.canvas.mpl_connect('button_press_event', self.onpress)
+        self.fig.canvas.mpl_connect('pick_event', self.onpick)
+
 
         # Don't start in any mode
         self._mode = None
@@ -363,7 +363,7 @@ class RadarDisplay(object) :
 
     def onlasso(self, verts) :
         newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='gray',
-                          hatch='/', alpha=0.5, picker=None)
+                          hatch='/', alpha=0.5, zorder=1, picker=None)
         self._features[self.frameIndex].append(Feature(contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
@@ -596,6 +596,11 @@ def GetClusters(radarData) :
 
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
+
+    # Create the directory if it doesn't exist already
+    if not os.path.exists(dirName) :
+        makedirs(dirName)
+
     paramFile = os.path.join(dirName, "simParams.conf")
     newSession = (not os.path.exists(paramFile))
 
@@ -646,9 +651,10 @@ def main(args) :
 def SaveState(paramFile, params, volumeFile, volume,
               origTrackFile, filtTrackFile, tracks, falarms) :
     # Do I need to update the Params?
+    print paramFile, volumeFile, origTrackFile, filtTrackFile
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
                                volume['volume_data'],
-                               path=os.path.basename(volumeFile))
+                               path=os.path.dirname(volumeFile))
     ParamUtils.SaveConfigFile(paramFile, params)
     TrackFileUtils.SaveTracks(origTrackFile, tracks, falarms)
     TrackFileUtils.SaveTracks(filtTrackFile, tracks, falarms)
