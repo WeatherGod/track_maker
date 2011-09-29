@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 
 import matplotlib.pyplot as plt
-from matplotlib.collections import EllipseCollection
-from matplotlib.patches import Ellipse, Circle
+from matplotlib.patches import Ellipse, Circle, Polygon
 from matplotlib.widgets import Lasso
 from matplotlib.nxutils import points_inside_poly
 #from mpl_toolkits.basemap import Basemap
@@ -264,7 +263,7 @@ class RadarDisplay(object) :
                 cents.append(newPoint)
 
         self._tracks = [Line2D(track['xLocs'], track['yLocs'],
-                               color='grey', lw=2, marker='.', pickable=True)
+                               color='grey', lw=2, marker='.', picker=True)
                         for track in tracks]
         for track in self._tracks :
             self.ax.add_artist(track)
@@ -298,10 +297,13 @@ class RadarDisplay(object) :
         return newpoint
 
     def onlasso(self, verts) :
-        self._contours[self.frameIndex].append(verts)
+        newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='none',
+                          hatch='/', picker=True)
+        self._contours[self.frameIndex].append(newPoly)
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
+        self.ax.add_artist(newPoly)
 
     def onpress(self, event) :
         if self.fig.canvas.widgetlock.locked() :
@@ -341,6 +343,7 @@ class RadarDisplay(object) :
             # Recalculate ellipsoids
             for ellip in self._ellipses[self.frameIndex] :
                 ellip.remove()
+
             self._ellipses[self.frameIndex] = None
             self._update_frame()            
             self.fig.canvas.draw()
@@ -353,6 +356,9 @@ class RadarDisplay(object) :
             for cent in self._centers[self.frameIndex] :
                 cent.remove()
             self._centers[self.frameIndex] = []
+            for contr in self._contours[self.frameIndex] :
+                contr.remove()
+            self._contours[self.frameIndex] = []
             self._update_frame()
             self.fig.canvas.draw()
 
@@ -368,6 +374,9 @@ class RadarDisplay(object) :
         # Set the frame's center points to invisible
         for cent in self._centers[frame] :
             cent.set_visible(False)
+
+        for contr in self._contours[frame] :
+            contr.set_visible(False)
 
     def get_clusters(self) :
         dataset = self.radarData.curr()
@@ -390,12 +399,13 @@ class RadarDisplay(object) :
 
         markers = np.zeros(data.shape, dtype=int)
 
-        for index, verts in enumerate(self._contours[self.frameIndex]) :
-            res = points_inside_poly(zip(self.xs.flat, self.ys.flat), verts)
+        for index, contr in enumerate(self._contours[self.frameIndex]) :
+            res = points_inside_poly(zip(self.xs.flat, self.ys.flat),
+                                     contr.get_xy())
             res.shape = self.xs.shape
             markers[res] = index + 1
 
-        markers[np.isnan(data) | (data < -20)] = -1
+        markers[np.isnan(data) | (data < 20)] = -1
 
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
         
@@ -443,6 +453,10 @@ class RadarDisplay(object) :
         # Set centers for this frame to visible
         for cent in self._centers[self.frameIndex] :
             cent.set_visible(True)
+
+        # Set contours for this frame to visible
+        for contr in self._contours[self.frameIndex] :
+            contr.set_visible(True)
 
         theDateTime = datetime.utcfromtimestamp(data['scan_time'])
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
