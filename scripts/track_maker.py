@@ -3,6 +3,8 @@
 import matplotlib.pyplot as plt
 from matplotlib.collections import EllipseCollection
 from matplotlib.patches import Ellipse, Circle
+from matplotlib.widgets import Lasso
+from matplotlib.nxutils import points_inside_poly
 #from mpl_toolkits.basemap import Basemap
 
 import ZigZag.TrackFileUtils as TrackFileUtils
@@ -250,6 +252,7 @@ class RadarDisplay(object) :
 
         self._im = None
         self._ellipses = [None] * len(self.radarData)
+        self._contours = [[] for i in xrange(len(self.radarData))]
         self._centers = [[] for i in xrange(len(self.radarData))]
         for frameIndex in range(len(self.radarData)) :
             cells = volume['volume_data'][frameIndex]['stormCells']
@@ -285,13 +288,32 @@ class RadarDisplay(object) :
         self.ax.set_ylabel('Y (km)')
 
         self.fig.canvas.mpl_connect('key_press_event', self.process_press)
-        self.fig.canvas.mpl_connect('button_release_event',
-                                     self.process_click)
+        #self.fig.canvas.mpl_connect('button_release_event',
+        #                             self.process_click)
+        self.fig.canvas.mpl_connect('button_press_event', self.onpress)
 
     def _new_point(self, x, y) :
         newpoint = Circle((x, y), color='k', zorder=3, picker=True)
         self.ax.add_artist(newpoint)
         return newpoint
+
+    def onlasso(self, verts) :
+        self._contours[self.frameIndex].append(verts)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.widgetlock.release(self.curr_lasso)
+        del self.curr_lasso
+
+    def onpress(self, event) :
+        if self.fig.canvas.widgetlock.locked() :
+             return
+        if event.inaxes is not self.ax :
+            return
+
+        self.curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
+                                self.onlasso)
+
+        # Set a lock on drawing the lasso until finished
+        self.fig.canvas.widgetlock(self.curr_lasso)
 
     def process_click(self, event) :
         if event.inaxes is self.ax :
@@ -322,6 +344,7 @@ class RadarDisplay(object) :
             self._ellipses[self.frameIndex] = None
             self._update_frame()            
             self.fig.canvas.draw()
+
         elif event.key == 'c' :
             # Completely remove the points for this frame
             for ellip in self._ellipses[self.frameIndex] :
@@ -366,18 +389,24 @@ class RadarDisplay(object) :
         data_digitized = data_digitized.astype('uint8')
 
         markers = np.zeros(data.shape, dtype=int)
+
+        for index, verts in enumerate(self._contours[self.frameIndex]) :
+            res = points_inside_poly(zip(self.xs.flat, self.ys.flat), verts)
+            res.shape = self.xs.shape
+            markers[res] = index + 1
+
         markers[np.isnan(data) | (data < -20)] = -1
 
-        for index, cent in enumerate(self._centers[self.frameIndex]) :
-            x_index = self.xs[0].searchsorted(cent.center[0])
-            y_index = self.ys[:, 0].searchsorted(cent.center[1])
-            markers[y_index, x_index] = index + 1
-
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
+        
         #print "min label:", clustLabels.min(), " max label:", clustLabels.max()
-        clustCnt = len(self._centers[self.frameIndex])
+        clustCnt = len(self._contours[self.frameIndex])
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
+
+    def _xy2grid(self, x, y) :
+        return (self.xs[0].searchsorted(x),
+                self.ys[:, 0].searchsorted(y))
 
 
     def _update_frame(self, lastFrame=None) :
