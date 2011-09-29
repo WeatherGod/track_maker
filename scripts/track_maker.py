@@ -212,7 +212,8 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
 class Feature(object) :
     _orig_colors = {'contour': 'k', 'center': 'gray', 'ellip': 'r'}
-    def __init__(self, contour=None, center=None, ellip=None) :
+    def __init__(self, contour=None, center=None, ellip=None,
+                       area=None) :
         self.objects = {}
         if contour is not None :
             self.objects['contour'] = contour
@@ -220,6 +221,8 @@ class Feature(object) :
             self.objects['center'] = center
         if ellip is not None :
             self.objects['ellip'] = ellip
+
+        self.feat_area = area
 
     def remove(self) :
         for key, item in self.objects.iteritems() :
@@ -229,11 +232,23 @@ class Feature(object) :
         self.objects = {}
 
     def center(self) :
-        # TODO
+        if self.objects.get('center', None) is not None :
+            return self.objects['center'].center
+        elif self.objects.get('ellip', None) is not None :
+            return self.objects['ellip'].center
+        elif self.objects.get('contour', None) is not None :
+            return np.mean(self.objects['contour'].get_xy(), axis=0)
+
         return (np.nan, np.nan)
 
     def area(self) :
-        # TODO
+        if self.feat_area is not None :
+            return self.feat_area
+        elif self.objects.get('ellip', None) is not None :
+            ellip = self.objects['ellip']
+            return 4 * ellip.height * ellip.width
+        # TODO: Get the correct equation...
+
         return np.nan
 
     def cleanup(self, hold=()) :
@@ -279,9 +294,6 @@ class RadarDisplay(object) :
         """
         Update the track and volume data.
         """
-
-
-
         # Gather the times that were examined (and thus known)
         data_times = []
         data_frames = []
@@ -291,14 +303,14 @@ class RadarDisplay(object) :
                 data_times.append(timeDiff / 60.0)
                 data_frames.append(index)
 
-        volTimes = [vol['volTime'] for vol in self.volume]
+        volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
 
         # Assume that common known times between orig_volTime and
         # data_times are the same
         for aTime, frame in zip(data_times, data_frames) :
             if np.isnan(volTimes[frame]) :
                 volTimes[frame] = aTime
-        
+
         if np.sum(np.isfinite(volTimes)) == 0 :
             # There is no time information available to use
             # So just do a np.arange()
@@ -318,9 +330,7 @@ class RadarDisplay(object) :
                                   for i, feat in enumerate(features)],
                                  dtype=TrackUtils.corner_dtype)
             featIndex += len(features)
-            
-        
-
+            vol['stormCells'] = strmCells
 
 
     def __init__(self, volume, tracks, falarms, radarFiles) :
@@ -367,7 +377,8 @@ class RadarDisplay(object) :
             for cellIndex in range(len(cells)) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
                                            cells['yLocs'][cellIndex])
-                newFeat = Feature(center=newPoint)
+                newFeat = Feature(center=newPoint,
+                                  area=cells['sizes'][cellIndex])
                 newFeat.set_visible(False)
                 feats.append(newFeat)
 
@@ -452,7 +463,7 @@ class RadarDisplay(object) :
 
     def onpress(self, event) :
         """
-        Key-press handler
+        Button-press handler
         """
         if self._mode == 'o' :
             # Outline mode
@@ -475,7 +486,6 @@ class RadarDisplay(object) :
             select = None
             for feat in self._features[self.frameIndex] :
                 if feat.contains(event) :
-                    print "Feature:", feat
                     select = feat
 
             if select is not None :
@@ -492,6 +502,9 @@ class RadarDisplay(object) :
 
 
     def process_key(self, event) :
+        """
+        Key-press handler
+        """
         if event.key in RadarDisplay._increms :
             if (0 <= (self.frameIndex + RadarDisplay._increms[event.key])
                   <= (len(self.radarData) - 1)) :
@@ -625,7 +638,7 @@ class RadarDisplay(object) :
             feat.cleanup(['contour'])
             
             feat.objects['center'] = newPoint
-            feat.objects['ellipse'] = ellip
+            feat.objects['ellip'] = ellip
 
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
@@ -736,7 +749,6 @@ def main(args) :
 def SaveState(paramFile, params, volumeFile, volume,
               origTrackFile, filtTrackFile, tracks, falarms) :
     # Do I need to update the Params?
-    print paramFile, volumeFile, origTrackFile, filtTrackFile
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
                                volume['volume_data'],
                                path=os.path.dirname(volumeFile))
