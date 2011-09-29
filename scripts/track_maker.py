@@ -189,15 +189,13 @@ def FitEllipse(p) :
     return h, k, 2*a, 2*b, t
 
 def FitEllipses(reslabels, labels, xgrid, ygrid) :
-    widths = []
-    heights = []
-    angles = []
-    offsets = []
+    ellips = []
 
     for index in labels :
         p = GetBoundary(reslabels, index)
 
         if len(p) < 3 :
+            ellips.append(None)
             # Not enough points to work with
             continue
 
@@ -205,13 +203,10 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
                             xgrid[pnt[0], pnt[1]]) for pnt in p])
 
         h, k, a, b, t = FitEllipse(coords)
-        offsets.append((h, k))                  # Center
-        widths.append(a)                        # Width
-        heights.append(b)                       # Height
-        angles.append(np.rad2deg(t))            # Rotation
+        ellips.append(Ellipse((h, k), a, b, np.rad2deg(t),
+                              lw=2, fc='none', ec='r'))
 
-    return [Ellipse(xy, w, h, a, lw=2) for xy, w, h, a in
-                    zip(offsets, widths, heights, angles)]
+    return ellips
 
 
 class Feature(object) :
@@ -232,6 +227,16 @@ class Feature(object) :
 
         self.objects = {}
 
+    def cleanup(self, hold=()) :
+        """
+        Remove all objects (except those specified by *hold*.
+        """
+        allKeys = self.objects.keys()
+        for key in allKeys :
+            if key not in hold :
+                discard = self.objects.pop(key)
+                discard.remove()
+
     def select(self) :
         for key, item in self.objects.iteritems() :
             if item is not None :
@@ -246,6 +251,15 @@ class Feature(object) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_visible(visible)
+
+    def set_picker(self, picker) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_picker(picker)
+
+    def contains(self, event) :
+        return any([item.contains(event)[0] for
+                    item in self.objects.values()])
  
 
 
@@ -283,18 +297,16 @@ class RadarDisplay(object) :
                               'right': self.radarData.next}
 
         self._im = None
-        self._ellipses = [None] * len(self.radarData)
-        self._contours = [[] for i in xrange(len(self.radarData))]
-        self._centers = [[] for i in xrange(len(self.radarData))]
+        self._features = [[] for i in xrange(len(self.radarData))]
         for frameIndex in range(len(self.radarData)) :
             cells = volume['volume_data'][frameIndex]['stormCells']
-            cents = self._centers[frameIndex]
+            feats = self._features[frameIndex]
             for cellIndex in range(len(cells)) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
                                            cells['yLocs'][cellIndex])
-                newPoint.set_visible(False)
-                newPoint.set_picker(None)
-                cents.append(newPoint)
+                newFeat = Feature(center=newPoint)
+                newFeat.set_visible(False)
+                feats.append(newFeat)
 
         self._curr_selection = None
 
@@ -303,11 +315,6 @@ class RadarDisplay(object) :
                         for track in tracks]
         for track in self._tracks :
             self.ax.add_artist(track)
-
-        
-        self._typemap = {Polygon : self._contours,
-                         Ellipse : self._ellipses,
-                         Circle : self._centers}
 
         self.volume = volume
         self.tracks = tracks
@@ -347,39 +354,17 @@ class RadarDisplay(object) :
         rcParams['keymap.save'] = []
 
     def _new_point(self, x, y) :
-        newpoint = Circle((x, y), color='k', zorder=3, picker=True)
+        newpoint = Circle((x, y), color='gray', zorder=3, picker=None)
         self.ax.add_artist(newpoint)
         return newpoint
 
     def onpick(self, event) :
-        if self._mode != 's' :
-            # Selection mode must be turned on
-            return
-
-        #print self._curr_selection, event.artist
-        # Deselection of self._curr_selection
-        self.deselect()
-
-        if event.artist is self._curr_selection :
-            self._curr_selection = None
-        else :
-            self._curr_selection = event.artist
-            self.select()
-
-        self.fig.canvas.draw_idle()
-
-    def deselect(self) :
-        if self._curr_selection is not None :
-            self._curr_selection.set_edgecolor('k')
-
-    def select(self) :
-        if self._curr_selection is not None :
-            self._curr_selection.set_edgecolor('w')
+        pass
 
     def onlasso(self, verts) :
         newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='gray',
-                          hatch='/', picker=True)
-        self._contours[self.frameIndex].append(newPoly)
+                          hatch='/', alpha=0.5, picker=None)
+        self._features[self.frameIndex].append(Feature(contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -387,20 +372,42 @@ class RadarDisplay(object) :
         self.ax.add_artist(newPoly)
 
     def onpress(self, event) :
-        if self._mode != 'o' :
-            # Outline mode must be turned on
-             return
+        if self._mode == 'o' :
+            # Outline mode
+            if self.fig.canvas.widgetlock.locked() :
+                return
+            if event.inaxes is not self.ax :
+                return
 
-        if self.fig.canvas.widgetlock.locked() :
-            return
-        if event.inaxes is not self.ax :
-            return
+            self.curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
+                                    self.onlasso)
 
-        self.curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
-                                self.onlasso)
+            # Set a lock on drawing the lasso until finished
+            self.fig.canvas.widgetlock(self.curr_lasso)
 
-        # Set a lock on drawing the lasso until finished
-        self.fig.canvas.widgetlock(self.curr_lasso)
+        elif self._mode == 's':
+            # Selection mode
+            if event.inaxes is not self.ax :
+                return
+
+            select = None
+            for feat in self._features[self.frameIndex] :
+                if feat.contains(event) :
+                    print "Feature:", feat
+                    select = feat
+
+            if select is not None :
+                if self._curr_selection is not None :
+                    self._curr_selection.deselect()
+
+                if self._curr_selection is select :
+                    self._curr_selection = None
+                else :
+                    self._curr_selection = select
+                    self._curr_selection.select()
+
+            self.fig.canvas.draw_idle()
+
 
     def process_key(self, event) :
         if event.key in RadarDisplay._increms :
@@ -412,8 +419,9 @@ class RadarDisplay(object) :
                 # Update the radar data
                 self._increm_funcs[event.key]()
 
-                self.deselect()
-                self._curr_selection = None
+                if self._curr_selection is not None :
+                    self._curr_selection.deselect()
+                    self._curr_selection = None
 
                 # Update the frame
                 self._update_frame(lastFrame)
@@ -423,38 +431,29 @@ class RadarDisplay(object) :
 
         elif event.key == 'r' :
             # Recalculate ellipsoids
-            for ellip in self._ellipses[self.frameIndex] :
-                ellip.remove()
-
-            self._ellipses[self.frameIndex] = None
-            self._update_frame()            
+            self._update_frame(force_recluster=True)
             self.fig.canvas.draw()
 
         elif event.key == 'c' :
-            # Completely remove the points for this frame
-            for ellip in self._ellipses[self.frameIndex] :
-                ellip.remove()
-            self._ellipses[self.frameIndex] = None
-            for cent in self._centers[self.frameIndex] :
-                cent.remove()
-            self._centers[self.frameIndex] = []
-            for contr in self._contours[self.frameIndex] :
-                contr.remove()
-            self._contours[self.frameIndex] = []
-            self.deselect()
-            self._curr_selection = None
+            # Completely remove the features for this frame
+            if self._curr_selection is not None :
+                self._curr_selection.deselect()
+                self._curr_selection = None
+
+            for feat in self._features[self.frameIndex] :
+                feat.remove()
+            self._features[self.frameIndex] = []
+
             self._update_frame()
             self.fig.canvas.draw()
 
         elif event.key == 'd' :
             # Delete the currently selected artist
             if self._curr_selection is not None :
-                if type(self._curr_selection) in self._typemap :
-                    artlist = self._typemap[type(self._curr_selection)]
-                    artlist[self.frameIndex].remove(self._curr_selection)
-                    self._curr_selection.remove()
-                    self.deselect()
-                    self._curr_selection = None
+                self._curr_selection.deselect()
+                self._curr_selection.remove()
+                self._features[self.frameIndex].remove(self._curr_selection)
+                self._curr_selection = None
 
             self.fig.canvas.draw()
 
@@ -479,19 +478,9 @@ class RadarDisplay(object) :
             frame = self.frameIndex
 
         # Set the frame's ellipses to invisible
-        if self._ellipses[frame] is not None :
-            for ellip in self._ellipses[frame] :
-                ellip.set_visible(False)
-                ellip.set_picker(None)
-
-        # Set the frame's center points to invisible
-        for cent in self._centers[frame] :
-            cent.set_visible(False)
-            cent.set_picker(None)
-
-        for contr in self._contours[frame] :
-            contr.set_visible(False)
-            contr.set_picker(None)
+        for feat in self._features[frame] :
+            feat.set_visible(False)
+            #feat.set_picker(None)
 
     def get_clusters(self) :
         dataset = self.radarData.curr()
@@ -514,23 +503,47 @@ class RadarDisplay(object) :
 
         markers = np.zeros(data.shape, dtype=int)
 
-        for index, contr in enumerate(self._contours[self.frameIndex]) :
-            res = points_inside_poly(zip(self.xs.flat, self.ys.flat),
-                                     contr.get_xy())
-            res.shape = self.xs.shape
-            markers[res] = index + 1
+        for index, feat in enumerate(self._features[self.frameIndex]) :
+            if 'contour' in feat.objects :
+                contr = feat.objects['contour']
+                res = points_inside_poly(zip(self.xs.flat, self.ys.flat),
+                                         contr.get_xy())
+                res.shape = self.xs.shape
+                markers[res] = index + 1
 
+            # No contour available? Then fall back to just a point
+            elif 'center' in feat.objects :
+                cent = feat.objects['center']
+                gridx, gridy = self._xy2grid(cent.center[0], cent.center[1])
+                markers[gridy, gridx] = index + 1
+
+            # TODO: work from an ellipse, if it exists?
+            else :
+                raise ValueError("Empty feature?")
+
+
+        # Set anything less than 20 dBZ as background
         markers[np.isnan(data) | (data < 20)] = -1
-
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
-        clustCnt = len(self._contours[self.frameIndex])
+        clustCnt = len(self._features[self.frameIndex])
 
         cents = ndimg.center_of_mass(data, clustLabels,
                                      range(1, clustCnt + 1))
+        ellipses = FitEllipses(clustLabels, range(1, clustCnt + 1),
+                               self.xs, self.ys)
 
-        for center in cents :
+        for center, ellip, feat in zip(cents, ellipses,
+                                       self._features[self.frameIndex]) :
             newPoint = self._new_point(self.xs[center], self.ys[center])
-            self._centers[self.frameIndex].append(newPoint)
+            if ellip is not None :
+                self.ax.add_artist(ellip)
+
+            # Remove any other objects that may exist before adding
+            # new objects to the feature.
+            feat.cleanup(['contour'])
+            
+            feat.objects['center'] = newPoint
+            feat.objects['ellipse'] = ellip
 
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
@@ -540,7 +553,7 @@ class RadarDisplay(object) :
                 self.ys[:, 0].searchsorted(y))
 
 
-    def _update_frame(self, lastFrame=None) :
+    def _update_frame(self, lastFrame=None, force_recluster=False) :
         if lastFrame is not None :
             self._clear_frame(lastFrame)
 
@@ -554,33 +567,14 @@ class RadarDisplay(object) :
         else :
             self._im.set_data(data['vals'][0])
 
-        # Have ellipses been created yet for this frame?
-        if self._ellipses[self.frameIndex] is None :
+        if force_recluster or any([('center' not in feat.objects) for
+                                   feat in self._features[self.frameIndex]]) :
             clustLabels, clustCnt = self.get_clusters()
-            self._ellipses[self.frameIndex] = FitEllipses(clustLabels,
-                                                  range(1, clustCnt + 1),
-                                                  self.xs, self.ys)
-
-            for ellip in self._ellipses[self.frameIndex] :
-                self.ax.add_artist(ellip)
-
-        # Set the ellipses for this frame to red
-        for ellip in self._ellipses[self.frameIndex] :
-            ellip.set_edgecolor('r')
-            ellip.set_facecolor('none')
-            ellip.set_visible(True)
-            ellip.set_picker(True)
-            ellip.set_zorder(3)
-
-        # Set centers for this frame to visible
-        for cent in self._centers[self.frameIndex] :
-            cent.set_visible(True)
-            cent.set_picker(True)
 
         # Set contours for this frame to visible
-        for contr in self._contours[self.frameIndex] :
-            contr.set_visible(True)
-            contr.set_picker(True)
+        for feat in self._features[self.frameIndex] :
+            feat.set_visible(True)
+            #feat.set_picker(True)
 
         theDateTime = datetime.utcfromtimestamp(data['scan_time'])
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
