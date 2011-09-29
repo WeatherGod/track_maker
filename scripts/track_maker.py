@@ -219,6 +219,7 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
 class RadarDisplay(object) :
     _increms = {'left': -1, 'right': 1}
+
     def __init__(self, volume, tracks, falarms, radarFiles) :
         """
         Create an interactive display for creating track data
@@ -262,11 +263,18 @@ class RadarDisplay(object) :
                 newPoint.set_visible(False)
                 cents.append(newPoint)
 
+        self._curr_selection = None
+
         self._tracks = [Line2D(track['xLocs'], track['yLocs'],
                                color='grey', lw=2, marker='.', picker=True)
                         for track in tracks]
         for track in self._tracks :
             self.ax.add_artist(track)
+
+        
+        self._typemap = {Polygon : self._contours,
+                         Ellipse : self._ellipses,
+                         Circle : self._centers}
 
         self.volume = volume
         self.tracks = tracks
@@ -286,18 +294,41 @@ class RadarDisplay(object) :
         self.ax.set_xlabel('X (km)')
         self.ax.set_ylabel('Y (km)')
 
-        self.fig.canvas.mpl_connect('key_press_event', self.process_press)
+        self.fig.canvas.mpl_connect('key_press_event', self.process_key)
         #self.fig.canvas.mpl_connect('button_release_event',
         #                             self.process_click)
         self.fig.canvas.mpl_connect('button_press_event', self.onpress)
+        self.fig.canvas.mpl_connect('pick_event', self.onpick)
 
     def _new_point(self, x, y) :
         newpoint = Circle((x, y), color='k', zorder=3, picker=True)
         self.ax.add_artist(newpoint)
         return newpoint
 
+    def onpick(self, event) :
+        print self._curr_selection, event.artist
+        # Deselection of self._curr_selection
+        self.deselect()
+
+        if event.artist is self._curr_selection :
+            self._curr_selection = None
+        else :
+            self._curr_selection = event.artist
+            self.select()
+
+        self.fig.canvas.draw_idle()
+        return True
+
+    def deselect(self) :
+        if self._curr_selection is not None :
+            self._curr_selection.set_edgecolor('k')
+
+    def select(self) :
+        if self._curr_selection is not None :
+            self._curr_selection.set_edgecolor('w')
+
     def onlasso(self, verts) :
-        newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='none',
+        newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='gray',
                           hatch='/', picker=True)
         self._contours[self.frameIndex].append(newPoly)
         self.fig.canvas.draw_idle()
@@ -323,7 +354,7 @@ class RadarDisplay(object) :
             self._centers[self.frameIndex].append(newPoint)
             self.fig.canvas.draw()
 
-    def process_press(self, event) :
+    def process_key(self, event) :
         if event.key in RadarDisplay._increms :
             if (0 <= (self.frameIndex + RadarDisplay._increms[event.key])
                   <= (len(self.radarData) - 1)) :
@@ -332,6 +363,9 @@ class RadarDisplay(object) :
 
                 # Update the radar data
                 self._increm_funcs[event.key]()
+
+                self.deselect()
+                self._curr_selection = None
 
                 # Update the frame
                 self._update_frame(lastFrame)
@@ -359,8 +393,20 @@ class RadarDisplay(object) :
             for contr in self._contours[self.frameIndex] :
                 contr.remove()
             self._contours[self.frameIndex] = []
+            self.deselect()
+            self._curr_selection = None
             self._update_frame()
             self.fig.canvas.draw()
+
+        elif event.key == 'd' :
+            # Delete the currently selected artist
+            if self._curr_selection is not None :
+                if type(self._curr_selection) in self._typemap :
+                    artlist = self._typemap[type(self._curr_selection)]
+                    artlist[self.frameIndex].remove(self._curr_selection)
+                    self._curr_selection.remove()
+                    self.deselect()
+                    self._curr_selection = None
 
     def _clear_frame(self, frame=None) :
         if frame is None :
