@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Circle, Polygon
 from matplotlib.widgets import Lasso
 from matplotlib.nxutils import points_inside_poly
+from matplotlib import rcParams
 #from mpl_toolkits.basemap import Basemap
 
 import ZigZag.TrackFileUtils as TrackFileUtils
@@ -196,14 +197,9 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
     for index in labels :
         p = GetBoundary(reslabels, index)
 
-        if len(p) == 0 :
-            print "EMPTY!"
-        if len(p) == 1 :
-            print "Near Empty!"
-
-        #if len(p) < 10 :
-        #    # Not enough points to work with
-        #    continue
+        if len(p) < 3 :
+            # Not enough points to work with
+            continue
 
         coords = np.array([(ygrid[pnt[0], pnt[1]],
                             xgrid[pnt[0], pnt[1]]) for pnt in p])
@@ -261,6 +257,7 @@ class RadarDisplay(object) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
                                            cells['yLocs'][cellIndex])
                 newPoint.set_visible(False)
+                newPoint.set_picker(None)
                 cents.append(newPoint)
 
         self._curr_selection = None
@@ -294,11 +291,24 @@ class RadarDisplay(object) :
         self.ax.set_xlabel('X (km)')
         self.ax.set_ylabel('Y (km)')
 
+
         self.fig.canvas.mpl_connect('key_press_event', self.process_key)
         #self.fig.canvas.mpl_connect('button_release_event',
         #                             self.process_click)
-        self.fig.canvas.mpl_connect('button_press_event', self.onpress)
-        self.fig.canvas.mpl_connect('pick_event', self.onpick)
+        self._pressid = self.fig.canvas.mpl_connect('button_press_event',
+                                                    self.onpress)
+        self._pickid = self.fig.canvas.mpl_connect('pick_event',
+                                                   self.onpick)
+
+        # Don't start in any mode
+        self._mode = None
+
+        # Need to remove some keys...
+        rcParams['keymap.home'].remove('r')
+        rcParams['keymap.back'].remove('left')
+        rcParams['keymap.forward'].remove('right')
+        rcParams['keymap.zoom'] = []
+        rcParams['keymap.save'] = []
 
     def _new_point(self, x, y) :
         newpoint = Circle((x, y), color='k', zorder=3, picker=True)
@@ -306,7 +316,11 @@ class RadarDisplay(object) :
         return newpoint
 
     def onpick(self, event) :
-        print self._curr_selection, event.artist
+        if self._mode != 's' :
+            # Selection mode must be turned on
+            return
+
+        #print self._curr_selection, event.artist
         # Deselection of self._curr_selection
         self.deselect()
 
@@ -317,7 +331,6 @@ class RadarDisplay(object) :
             self.select()
 
         self.fig.canvas.draw_idle()
-        return True
 
     def deselect(self) :
         if self._curr_selection is not None :
@@ -334,11 +347,16 @@ class RadarDisplay(object) :
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
+        self.curr_lasso = None
         self.ax.add_artist(newPoly)
 
     def onpress(self, event) :
-        if self.fig.canvas.widgetlock.locked() :
+        if self._mode != 'o' :
+            # Outline mode must be turned on
              return
+
+        if self.fig.canvas.widgetlock.locked() :
+            return
         if event.inaxes is not self.ax :
             return
 
@@ -408,6 +426,24 @@ class RadarDisplay(object) :
                     self.deselect()
                     self._curr_selection = None
 
+            self.fig.canvas.draw()
+
+        elif event.key == 's' :
+            # set mode to "selection mode"
+            self._mode = 's'
+
+            # Just in case the canvas is still locked.
+            if self.curr_lasso is not None :
+                self.fig.canvas.widgetlock.release(self.curr_lasso)
+                del self.curr_lasso
+                self.curr_lasso = None
+            print "Selection Mode"
+
+        elif event.key == 'o' :
+            # set mode to "outline mode"
+            self._mode = 'o'
+            print "Outline Mode"
+
     def _clear_frame(self, frame=None) :
         if frame is None :
             frame = self.frameIndex
@@ -416,13 +452,16 @@ class RadarDisplay(object) :
         if self._ellipses[frame] is not None :
             for ellip in self._ellipses[frame] :
                 ellip.set_visible(False)
+                ellip.set_picker(None)
 
         # Set the frame's center points to invisible
         for cent in self._centers[frame] :
             cent.set_visible(False)
+            cent.set_picker(None)
 
         for contr in self._contours[frame] :
             contr.set_visible(False)
+            contr.set_picker(None)
 
     def get_clusters(self) :
         dataset = self.radarData.curr()
@@ -494,15 +533,18 @@ class RadarDisplay(object) :
             ellip.set_edgecolor('r')
             ellip.set_facecolor('none')
             ellip.set_visible(True)
+            ellip.set_picker(True)
             ellip.set_zorder(3)
 
         # Set centers for this frame to visible
         for cent in self._centers[self.frameIndex] :
             cent.set_visible(True)
+            cent.set_picker(True)
 
         # Set contours for this frame to visible
         for contr in self._contours[self.frameIndex] :
             contr.set_visible(True)
+            contr.set_picker(True)
 
         theDateTime = datetime.utcfromtimestamp(data['scan_time'])
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
