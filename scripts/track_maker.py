@@ -213,6 +213,42 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
     return [Ellipse(xy, w, h, a, lw=2) for xy, w, h, a in
                     zip(offsets, widths, heights, angles)]
 
+
+class Feature(object) :
+    _orig_colors = {'contour': 'k', 'center': 'gray', 'ellip': 'r'}
+    def __init__(self, contour=None, center=None, ellip=None) :
+        self.objects = {}
+        if contour is not None :
+            self.objects['contour'] = contour
+        if center is not None :
+            self.objects['center'] = center
+        if ellip is not None :
+            self.objects['ellip'] = ellip
+
+    def remove(self) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.remove()
+
+        self.objects = {}
+
+    def select(self) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_edgecolor('w')
+
+    def deselect(self) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_edgecolor(Feature._orig_colors.get(key, 'k'))
+
+    def set_visible(self, visible) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_visible(visible)
+ 
+
+
 class RadarDisplay(object) :
     _increms = {'left': -1, 'right': 1}
 
@@ -366,12 +402,6 @@ class RadarDisplay(object) :
         # Set a lock on drawing the lasso until finished
         self.fig.canvas.widgetlock(self.curr_lasso)
 
-    def process_click(self, event) :
-        if event.inaxes is self.ax :
-            newPoint = self._new_point(event.xdata, event.ydata)
-            self._centers[self.frameIndex].append(newPoint)
-            self.fig.canvas.draw()
-
     def process_key(self, event) :
         if event.key in RadarDisplay._increms :
             if (0 <= (self.frameIndex + RadarDisplay._increms[event.key])
@@ -493,9 +523,15 @@ class RadarDisplay(object) :
         markers[np.isnan(data) | (data < 20)] = -1
 
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
-        
-        #print "min label:", clustLabels.min(), " max label:", clustLabels.max()
         clustCnt = len(self._contours[self.frameIndex])
+
+        cents = ndimg.center_of_mass(data, clustLabels,
+                                     range(1, clustCnt + 1))
+
+        for center in cents :
+            newPoint = self._new_point(self.xs[center], self.ys[center])
+            self._centers[self.frameIndex].append(newPoint)
+
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
 
