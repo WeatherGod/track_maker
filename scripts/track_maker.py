@@ -228,6 +228,14 @@ class Feature(object) :
 
         self.objects = {}
 
+    def center(self) :
+        # TODO
+        return (np.nan, np.nan)
+
+    def area(self) :
+        # TODO
+        return np.nan
+
     def cleanup(self, hold=()) :
         """
         Remove all objects (except those specified by *hold*.
@@ -267,18 +275,72 @@ class Feature(object) :
 class RadarDisplay(object) :
     _increms = {'left': -1, 'right': 1}
 
+    def save_features(self) :
+        """
+        Update the track and volume data.
+        """
+
+
+
+        # Gather the times that were examined (and thus known)
+        data_times = []
+        data_frames = []
+        for index, aTime in enumerate(self.volTimes) :
+            if aTime is not None :
+                timeDiff = (aTime - self.volTimes[0]).total_seconds()
+                data_times.append(timeDiff / 60.0)
+                data_frames.append(index)
+
+        volTimes = [vol['volTime'] for vol in self.volume]
+
+        # Assume that common known times between orig_volTime and
+        # data_times are the same
+        for aTime, frame in zip(data_times, data_frames) :
+            if np.isnan(volTimes[frame]) :
+                volTimes[frame] = aTime
+        
+        if np.sum(np.isfinite(volTimes)) == 0 :
+            # There is no time information available to use
+            # So just do a np.arange()
+            volTimes = np.arange(len(self.volume))
+        else :
+            # TODO: Try and fill in this data by assuming linear spacing
+            pass
+
+        featIndex = 0
+
+        for frameIndex, features in enumerate(self._features) :
+            vol = self.volume['volume_data'][frameIndex]
+            vol['volTime'] = volTimes[frameIndex]
+            
+            strmCells = np.array([(feat.center()[0], feat.center()[1],
+                                   feat.area(), featIndex + i)
+                                  for i, feat in enumerate(features)],
+                                 dtype=TrackUtils.corner_dtype)
+            featIndex += len(features)
+            
+        
+
+
+
     def __init__(self, volume, tracks, falarms, radarFiles) :
         """
         Create an interactive display for creating track data
         from radar data.
         """
         frameDiff = len(radarFiles) - len(volume['volume_data'])
+        if len(volume['volume_data']) > 0 :
+            startIndex = volume['volume_data'][0]['frameNum']
+        else :
+            startIndex = 0
+
         if frameDiff < 0 :
             raise ValueError("Previous session had more frames than available"
                              "input data frames")
         elif frameDiff > 0 :
             newFrames = [{"volTime": np.nan,
-                          "frameNum": len(volume['volume_data']) + index,
+                          "frameNum": (len(volume['volume_data']) +
+                                       index + startIndex),
                           "stormCells": np.array([],
                                                 dtype=TrackUtils.corner_dtype)}
                          for index in xrange(frameDiff)]
@@ -310,6 +372,7 @@ class RadarDisplay(object) :
                 feats.append(newFeat)
 
         self._curr_selection = None
+        self.volTimes = [None] * len(self.radarData)
 
         self._tracks = [Line2D(track['xLocs'], track['yLocs'],
                                color='grey', lw=2, marker='.', picker=True)
@@ -341,7 +404,7 @@ class RadarDisplay(object) :
         #                             self.process_click)
         self.fig.canvas.mpl_connect('button_press_event', self.onpress)
         self.fig.canvas.mpl_connect('pick_event', self.onpick)
-
+        self.fig.canvas.mpl_connect('close_event', self.onclose)
 
         # Don't start in any mode
         self._mode = None
@@ -358,10 +421,26 @@ class RadarDisplay(object) :
         self.ax.add_artist(newpoint)
         return newpoint
 
+
     def onpick(self, event) :
+        """
+        Track picker handler
+        """
         pass
 
+    def onclose(self, event) :
+        """
+        Trigger a saving of data (Note: this isn't a saving to files,
+        but to the track lists and volume lists).
+        """
+        self.save_features()
+
+
     def onlasso(self, verts) :
+        """
+        Creation of the contour polygon, which selects the initial
+        region for watershed clustering.
+        """
         newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='gray',
                           hatch='/', alpha=0.5, zorder=1, picker=None)
         self._features[self.frameIndex].append(Feature(contour=newPoly))
@@ -372,6 +451,9 @@ class RadarDisplay(object) :
         self.ax.add_artist(newPoly)
 
     def onpress(self, event) :
+        """
+        Key-press handler
+        """
         if self._mode == 'o' :
             # Outline mode
             if self.fig.canvas.widgetlock.locked() :
@@ -577,6 +659,9 @@ class RadarDisplay(object) :
             #feat.set_picker(True)
 
         theDateTime = datetime.utcfromtimestamp(data['scan_time'])
+        if self.volTimes[self.frameIndex] is None :
+            self.volTimes[self.frameIndex] = theDateTime
+
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
 
 
