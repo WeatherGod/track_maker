@@ -20,6 +20,7 @@ import scipy.ndimage as ndimg
 import os.path
 from os import makedirs
 from datetime import datetime
+from textwrap import dedent
 
 class RadarCache(object) :
     def __init__(self, files, cachewidth=3) :
@@ -205,13 +206,17 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
         h, k, a, b, t = FitEllipse(coords)
         ellips.append(Ellipse((h, k), a, b, np.rad2deg(t),
-                              lw=2, fc='none', ec='r', zorder=2))
+                              lw=4, fc='none', zorder=2,
+                              ec=Feature.orig_colors['ellip'],
+                              alpha=Feature.orig_alphas['ellip']))
 
     return ellips
 
 
 class Feature(object) :
-    _orig_colors = {'contour': 'k', 'center': 'gray', 'ellip': 'r'}
+    orig_colors = {'contour': 'k', 'center': 'k', 'ellip': 'r'}
+    orig_alphas = {'contour': 0.5, 'center': 0.75, 'ellip': 1.0}
+    orig_zorders = {'contour': 1.0, 'center': 3.0, 'ellip': 2.0}
     def __init__(self, contour=None, center=None, ellip=None,
                        area=None) :
         self.objects = {}
@@ -222,7 +227,8 @@ class Feature(object) :
         if ellip is not None :
             self.objects['ellip'] = ellip
 
-        self.feat_area = area
+        self.feat_area = area if (area is not None and
+                                  not np.isnan(area)) else None
 
     def remove(self) :
         for key, item in self.objects.iteritems() :
@@ -269,17 +275,42 @@ class Feature(object) :
     def deselect(self) :
         for key, item in self.objects.iteritems() :
             if item is not None :
-                item.set_edgecolor(Feature._orig_colors.get(key, 'k'))
+                item.set_edgecolor(Feature.orig_colors.get(key, 'k'))
+
+    def get_visible(self) :
+        """
+        If any objects are visible, then return True.
+        """
+        return any(item.get_visible() for item in self.objects.values() if
+                   item is not None)
 
     def set_visible(self, visible) :
+        """
+        Set visible state for all objects.
+        """
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_visible(visible)
+
+    def set_zorder(self, zorder) :
+        """
+        Set the zorder of the objects of the feature.
+        """
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_zorder(zorder +
+                                (Feature.orig_zorders.get(key, 0.0) /
+                                 len(Feature.orig_zorders)))
 
     def set_picker(self, picker) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_picker(picker)
+
+    def set_alpha(self, alpha) :
+        for key, item in self.objects.iteritems() :
+            if item is not None :
+                item.set_alpha(alpha * Feature.orig_alphas.get(key, 1.0))
 
     def contains(self, event) :
         return any([item.contains(event)[0] for
@@ -384,6 +415,9 @@ class RadarDisplay(object) :
         for track in self._tracks :
             self.ax.add_artist(track)
 
+    def do_save_results(self) :
+        return self._do_save
+
     def __init__(self, volume, tracks, falarms, radarFiles) :
         """
         Create an interactive display for creating track data
@@ -410,6 +444,7 @@ class RadarDisplay(object) :
         self.load_features()
 
         self.frameIndex = 0
+        self._show_features = False
         data = self.radarData.next()
         lons, lats = np.meshgrid(data['lons'], data['lats'])
         self.xs, self.ys = LonLat2Cart((minLon + maxLon)/2.0,
@@ -429,21 +464,29 @@ class RadarDisplay(object) :
         #                             self.process_click)
         self.fig.canvas.mpl_connect('button_press_event', self.onpress)
         self.fig.canvas.mpl_connect('pick_event', self.onpick)
-        self.fig.canvas.mpl_connect('close_event', self.onclose)
+        self._savefeats_cid = self.fig.canvas.mpl_connect('close_event',
+                                                          self.onclose)
+        self._do_save = True
 
         # Start in outline mode
         self._mode = 'o'
 
         # Need to remove some keys...
+        rcParams['keymap.fullscreen'] = []
         rcParams['keymap.home'].remove('r')
+        rcParams['keymap.home'].remove('h')
         rcParams['keymap.back'].remove('left')
         rcParams['keymap.forward'].remove('right')
+        rcParams['keymap.forward'].remove('v')
         rcParams['keymap.zoom'] = []
         rcParams['keymap.save'] = []
 
+        print "Welcome to Track Maker! (press 'h' for menu of options)"
+
     def _new_point(self, x, y) :
-        newpoint = Circle((x, y), fc='red', ec='gray', zorder=3, picker=None,
-                          radius=4, lw=6, alpha=0.75)
+        newpoint = Circle((x, y), fc='red', zorder=3, picker=None,
+                          ec=Feature.orig_colors['center'], radius=6, lw=2,
+                          alpha=Feature.orig_alphas['center'])
         self.ax.add_artist(newpoint)
         return newpoint
 
@@ -467,8 +510,9 @@ class RadarDisplay(object) :
         Creation of the contour polygon, which selects the initial
         region for watershed clustering.
         """
-        newPoly = Polygon(verts, lw=2, edgecolor='k', facecolor='gray',
-                          hatch='/', alpha=0.5, zorder=1, picker=None)
+        newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
+                          ec=Feature.orig_colors['contour'],
+                          alpha=Feature.orig_alphas['contour'], picker=None)
         self._features[self.frameIndex].append(Feature(contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
@@ -534,11 +578,11 @@ class RadarDisplay(object) :
                     self._curr_selection = None
 
                 # Update the frame
-                self.update_frame(lastFrame)
+                self.update_frame(lastFrame, hold_recluster=True)
 
         elif event.key == 'r' :
             # Recalculate ellipsoids
-            self.update_frame(force_recluster=True)
+            self.update_frame(force_recluster=True, hold_recluster=False)
 
         elif event.key == 'c' :
             # Completely remove the features for this frame
@@ -578,13 +622,73 @@ class RadarDisplay(object) :
             self._mode = 'o'
             print "Outline Mode"
 
+        elif event.key == 'f' :
+            # Show/Hide all identified features across time
+            self._show_features = (not self._show_features)
+            print "Show features:", self._show_features
+            self.update_frame(hold_recluster=True)
+
+        elif event.key == 'v' :
+            # Toogle save
+            self._do_save = (not self._do_save)
+            print "Do Save:", self._do_save
+            if not self._do_save :
+                if self._savefeats_cid is not None :
+                    self.fig.canvas.mpl_disconnect(self._savefeats_cid)
+                    self._savefeats_cid = None
+            else :
+                if self._savefeats_cid is None :
+                    self._savefeats_cid = self.fig.canvas.mpl_connect(
+                                            "close_event", self.onclose)
+
+        elif event.key == 'V' :
+            # Save features to memory NOW!
+            print "Converting to track and volume objects, NOW!"
+            self.save_features()
+
+        elif event.key == 'h' :
+            # Print helpful Menu
+            print dedent("""
+                Track Maker
+                ===========
+
+                Key         Action
+                ------      -----------------------------
+                h           Show this helpful menu
+                right       Step forward by one frame
+                left        Step back by one frame
+                o           Outline mode
+                s           Selection mode
+                r           (re)cluster this frame
+                c           clear this frame of existing features
+                d           delete the currently selected feature
+                s           show/hide all features across all time
+                v           toggle saving features upon closing figure
+                                (this is useful if you detect an error and
+                                 do not want to save bad data).
+                V           save (convert) features now
+                                (does not actually save features to file, but
+                                 only prepares them for saving to file).
+
+                Current Values
+                --------------
+                    Current Frame: %d of %d
+                    Current Mode: %s
+                    Do save upon figure close: %s
+                    Show all features: %s
+                """ % (self.frameIndex + 1, len(self.radarData), self._mode,
+                       self._do_save, self._show_features))
+
+
     def _clear_frame(self, frame=None) :
         if frame is None :
             frame = self.frameIndex
 
-        # Set the frame's ellipses to invisible
+        # Set the frame's features to invisible
         for feat in self._features[frame] :
             feat.set_visible(False)
+            # Also reset their alpha values
+            feat.set_alpha(1.0)
             #feat.set_picker(None)
 
     def get_clusters(self) :
@@ -662,7 +766,22 @@ class RadarDisplay(object) :
                 self.ys[:, 0].searchsorted(y))
 
 
-    def update_frame(self, lastFrame=None, force_recluster=False) :
+    def update_frame(self, lastFrame=None,
+                           force_recluster=False, hold_recluster=False) :
+        """
+        Redraw the current frame.  Calculate clusters if needed.
+
+        *lastFrame*         int (None)
+            If specified, make this frame's features invisible.
+
+        *force_recluster*   boolean (False)
+            If True, do a recluster, even if it seems like it isn't needed.
+            Can be over-ridden by *hold_recluster*.
+
+        *hold_recluster*    boolean (False)
+            If True, then don't do a recluster, even if needed or
+            *force_recluster* is True.
+        """
         if lastFrame is not None :
             self._clear_frame(lastFrame)
 
@@ -678,12 +797,45 @@ class RadarDisplay(object) :
 
         if force_recluster or any([('center' not in feat.objects) for
                                    feat in self._features[self.frameIndex]]) :
-            clustLabels, clustCnt = self.get_clusters()
+            if not hold_recluster :
+                clustLabels, clustCnt = self.get_clusters()
 
-        # Set contours for this frame to visible
+        # Set features for this frame to visible
         for feat in self._features[self.frameIndex] :
             feat.set_visible(True)
+            # Return alpha back to normal
+            feat.set_alpha(1.0)
+            # Put it on top
+            feat.set_zorder(len(self.radarData))
             #feat.set_picker(True)
+
+        # Show the other features
+        if self._show_features :
+            # How much alpha should change for each frame from frameIndex
+            # The closer to self.frameIndex, the more opaque
+            alphaIncrem = 1.0 / len(self.radarData)
+            preSlice = slice(self.frameIndex)
+            postSlice = slice(-1, self.frameIndex, -1)
+            for index, features in enumerate(self._features[preSlice]) :
+                timeAlpha = 1.0 - ((self.frameIndex - index) * alphaIncrem)
+                for feat in features :
+                    feat.set_visible(True)
+                    feat.set_alpha(timeAlpha)
+                    feat.set_zorder(index + 1)
+
+            for index, features in enumerate(self._features[postSlice]) :
+                timeAlpha = 1.0 - ((self.frameIndex - index) * alphaIncrem)
+                for feat in features :
+                    feat.set_visible(True)
+                    feat.set_alpha(timeAlpha)
+                    feat.set_zorder(index + 1)
+        else :
+            for index, features in enumerate(self._features) :
+                if index != self.frameIndex :
+                    for feat in features :
+                        feat.set_visible(False)
+                        # Return alpha to normal
+                        feat.set_alpha(1.0)
 
         theDateTime = datetime.utcfromtimestamp(data['scan_time'])
         if self.volTimes[self.frameIndex] is None :
@@ -700,19 +852,12 @@ def AnalyzeRadar(volume, tracks, falarms, radarFiles) :
     rd = RadarDisplay(volume, tracks, falarms, radarFiles)
     plt.show()
 
-
-def GetClusters(radarData) :
-    cleanmask = ndimg.binary_opening(radarData > 30,
-                                     structure=np.ones((5, 5)))
-    return ndimg.label(cleanmask)
-
+    return rd.do_save_results()
 
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
 
-    # Create the directory if it doesn't exist already
-    if not os.path.exists(dirName) :
-        makedirs(dirName)
+
 
     paramFile = os.path.join(dirName, "simParams.conf")
     newSession = (not os.path.exists(paramFile))
@@ -753,12 +898,16 @@ def main(args) :
 
     #reflectData = [LoadRastRadar(radarFile) for radarFile in args.input_files]
 
-    AnalyzeRadar(volume, tracks, falarms, args.input_files)
+    do_save = AnalyzeRadar(volume, tracks, falarms, args.input_files)
 
+    if do_save :
+        # Create the directory if it doesn't exist already
+        if not os.path.exists(dirName) :
+            makedirs(dirName)
 
-    # Final save
-    SaveState(paramFile, sceneParams, volumeFile, volume,
-              origTrackFile, filtTrackFile, tracks, falarms)
+        # Final save
+        SaveState(paramFile, sceneParams, volumeFile, volume,
+                  origTrackFile, filtTrackFile, tracks, falarms)
 
 
 def SaveState(paramFile, params, volumeFile, volume,
