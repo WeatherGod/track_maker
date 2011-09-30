@@ -332,33 +332,63 @@ class RadarDisplay(object) :
             featIndex += len(features)
             vol['stormCells'] = strmCells
 
+    def load_features(self) :
+        frameDiff = len(self.radarData) - len(self.volume['volume_data'])
+        if len(self.volume['volume_data']) > 0 :
+            startIndex = self.volume['volume_data'][0]['frameNum']
+        else :
+            startIndex = 0
+
+        volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
+        if len(volTimes) > 0 :
+            startTime = volTimes[0]
+            if len(volTimes) > 1 :
+                assumeDeltaT = np.median(np.diff(volTimes[::-1]))
+            else :
+                assumeDeltaT = 1.0
+        else :
+            startTime = 0.0
+            assumeDeltaT = 1.0
+
+
+        if frameDiff < 0 :
+            raise ValueError("Previous session had more frames than available"
+                             "input data frames")
+        elif frameDiff > 0 :
+            newFrames = [{"volTime": (((len(self.volume['volume_data']) +
+                                        index) * assumeDeltaT) + startTime),
+                          "frameNum": (len(self.volume['volume_data']) +
+                                       index + startIndex),
+                          "stormCells": np.array([],
+                                                 dtype=TrackUtils.corner_dtype)
+                          }
+                         for index in xrange(frameDiff)]
+            self.volume['volume_data'].extend(newFrames)
+            self.volume['frame_cnt'] = len(self.radarData)
+
+        self._features = [[] for i in xrange(len(self.radarData))]
+        for frameIndex in xrange(len(self.radarData)) :
+            cells = self.volume['volume_data'][frameIndex]['stormCells']
+            feats = self._features[frameIndex]
+            for cellIndex in xrange(len(cells)) :
+                newPoint = self._new_point(cells['xLocs'][cellIndex],
+                                           cells['yLocs'][cellIndex])
+                newFeat = Feature(center=newPoint,
+                                  area=cells['sizes'][cellIndex])
+                newFeat.set_visible(False)
+                feats.append(newFeat)
+
+        self._tracks = [Line2D(track['xLocs'], track['yLocs'],
+                               color='grey', lw=2, marker='.', picker=True)
+                        for track in self.tracks]
+        for track in self._tracks :
+            self.ax.add_artist(track)
 
     def __init__(self, volume, tracks, falarms, radarFiles) :
         """
         Create an interactive display for creating track data
         from radar data.
         """
-        frameDiff = len(radarFiles) - len(volume['volume_data'])
-        if len(volume['volume_data']) > 0 :
-            startIndex = volume['volume_data'][0]['frameNum']
-        else :
-            startIndex = 0
-
-        if frameDiff < 0 :
-            raise ValueError("Previous session had more frames than available"
-                             "input data frames")
-        elif frameDiff > 0 :
-            newFrames = [{"volTime": np.nan,
-                          "frameNum": (len(volume['volume_data']) +
-                                       index + startIndex),
-                          "stormCells": np.array([],
-                                                dtype=TrackUtils.corner_dtype)}
-                         for index in xrange(frameDiff)]
-            volume['volume_data'].extend(newFrames)
-            volume['frame_cnt'] = len(radarFiles)
-
-
-
         minLat, minLon, maxLat, maxLon = ConsistentDomain(radarFiles)
 
 
@@ -370,30 +400,14 @@ class RadarDisplay(object) :
                               'right': self.radarData.next}
 
         self._im = None
-        self._features = [[] for i in xrange(len(self.radarData))]
-        for frameIndex in range(len(self.radarData)) :
-            cells = volume['volume_data'][frameIndex]['stormCells']
-            feats = self._features[frameIndex]
-            for cellIndex in range(len(cells)) :
-                newPoint = self._new_point(cells['xLocs'][cellIndex],
-                                           cells['yLocs'][cellIndex])
-                newFeat = Feature(center=newPoint,
-                                  area=cells['sizes'][cellIndex])
-                newFeat.set_visible(False)
-                feats.append(newFeat)
-
         self._curr_selection = None
         self.volTimes = [None] * len(self.radarData)
-
-        self._tracks = [Line2D(track['xLocs'], track['yLocs'],
-                               color='grey', lw=2, marker='.', picker=True)
-                        for track in tracks]
-        for track in self._tracks :
-            self.ax.add_artist(track)
 
         self.volume = volume
         self.tracks = tracks
         self.falarms = falarms
+
+        self.load_features()
 
         self.frameIndex = 0
         data = self.radarData.next()
@@ -402,7 +416,7 @@ class RadarDisplay(object) :
                                        (minLat + maxLat)/2.0,
                                         lons, lats)
 
-        self._update_frame()
+        self.update_frame()
 
         self.ax.set_xlim(self.xs.min(), self.xs.max())
         self.ax.set_ylim(self.ys.min(), self.ys.max())
@@ -417,8 +431,8 @@ class RadarDisplay(object) :
         self.fig.canvas.mpl_connect('pick_event', self.onpick)
         self.fig.canvas.mpl_connect('close_event', self.onclose)
 
-        # Don't start in any mode
-        self._mode = None
+        # Start in outline mode
+        self._mode = 'o'
 
         # Need to remove some keys...
         rcParams['keymap.home'].remove('r')
@@ -428,7 +442,8 @@ class RadarDisplay(object) :
         rcParams['keymap.save'] = []
 
     def _new_point(self, x, y) :
-        newpoint = Circle((x, y), color='gray', zorder=3, picker=None)
+        newpoint = Circle((x, y), fc='red', ec='gray', zorder=3, picker=None,
+                          radius=4, lw=6, alpha=0.75)
         self.ax.add_artist(newpoint)
         return newpoint
 
@@ -519,15 +534,11 @@ class RadarDisplay(object) :
                     self._curr_selection = None
 
                 # Update the frame
-                self._update_frame(lastFrame)
-
-                # Update the window
-                self.fig.canvas.draw()
+                self.update_frame(lastFrame)
 
         elif event.key == 'r' :
             # Recalculate ellipsoids
-            self._update_frame(force_recluster=True)
-            self.fig.canvas.draw()
+            self.update_frame(force_recluster=True)
 
         elif event.key == 'c' :
             # Completely remove the features for this frame
@@ -539,8 +550,7 @@ class RadarDisplay(object) :
                 feat.remove()
             self._features[self.frameIndex] = []
 
-            self._update_frame()
-            self.fig.canvas.draw()
+            self.update_frame()
 
         elif event.key == 'd' :
             # Delete the currently selected artist
@@ -550,7 +560,7 @@ class RadarDisplay(object) :
                 self._features[self.frameIndex].remove(self._curr_selection)
                 self._curr_selection = None
 
-            self.fig.canvas.draw()
+            self.fig.canvas.draw_idle()
 
         elif event.key == 's' :
             # set mode to "selection mode"
@@ -629,14 +639,18 @@ class RadarDisplay(object) :
 
         for center, ellip, feat in zip(cents, ellipses,
                                        self._features[self.frameIndex]) :
-            newPoint = self._new_point(self.xs[center], self.ys[center])
-            if ellip is not None :
-                self.ax.add_artist(ellip)
-
             # Remove any other objects that may exist before adding
             # new objects to the feature.
             feat.cleanup(['contour'])
-            
+
+            if ellip is None :
+                continue
+                
+            cent_indx = tuple(np.floor(center).astype(int).tolist())
+            newPoint = self._new_point(self.xs[cent_indx], self.ys[cent_indx])
+            if ellip is not None :
+                self.ax.add_artist(ellip)
+
             feat.objects['center'] = newPoint
             feat.objects['ellip'] = ellip
 
@@ -648,7 +662,7 @@ class RadarDisplay(object) :
                 self.ys[:, 0].searchsorted(y))
 
 
-    def _update_frame(self, lastFrame=None, force_recluster=False) :
+    def update_frame(self, lastFrame=None, force_recluster=False) :
         if lastFrame is not None :
             self._clear_frame(lastFrame)
 
@@ -676,6 +690,7 @@ class RadarDisplay(object) :
             self.volTimes[self.frameIndex] = theDateTime
 
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
+        self.fig.canvas.draw_idle()
 
 
    
