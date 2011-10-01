@@ -217,8 +217,9 @@ class Feature(object) :
     orig_colors = {'contour': 'k', 'center': 'k', 'ellip': 'r'}
     orig_alphas = {'contour': 0.5, 'center': 0.75, 'ellip': 1.0}
     orig_zorders = {'contour': 1.0, 'center': 3.0, 'ellip': 2.0}
-    def __init__(self, contour=None, center=None, ellip=None,
+    def __init__(self, frame, contour=None, center=None, ellip=None,
                        area=None) :
+        self.frame = frame
         self.objects = {}
         if contour is not None :
             self.objects['contour'] = contour
@@ -404,7 +405,7 @@ class RadarDisplay(object) :
             for cellIndex in xrange(len(cells)) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
                                            cells['yLocs'][cellIndex])
-                newFeat = Feature(center=newPoint,
+                newFeat = Feature(frameIndex, center=newPoint,
                                   area=cells['sizes'][cellIndex])
                 newFeat.set_visible(False)
                 feats.append(newFeat)
@@ -435,6 +436,8 @@ class RadarDisplay(object) :
 
         self._im = None
         self._curr_selection = None
+        self._alphaScale = 1.0
+        self.curr_lasso = None
         self.volTimes = [None] * len(self.radarData)
 
         self.volume = volume
@@ -513,7 +516,8 @@ class RadarDisplay(object) :
         newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
                           ec=Feature.orig_colors['contour'],
                           alpha=Feature.orig_alphas['contour'], picker=None)
-        self._features[self.frameIndex].append(Feature(contour=newPoly))
+        self._features[self.frameIndex].append(Feature(contour=newPoly,
+                                                       frame=self.frameIndex))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -549,6 +553,12 @@ class RadarDisplay(object) :
 
             if select is not None :
                 if self._curr_selection is not None :
+                    # TODO: Make a tracking association
+                    if (self._curr_selection.get_visible() and
+                        self.frameIndex != self._curr_selection.frame) :
+                        # We are making associations across frames!
+                        pass
+
                     self._curr_selection.deselect()
 
                 if self._curr_selection is select :
@@ -573,12 +583,20 @@ class RadarDisplay(object) :
                 # Update the radar data
                 self._increm_funcs[event.key]()
 
-                if self._curr_selection is not None :
-                    self._curr_selection.deselect()
-                    self._curr_selection = None
+                #if self._curr_selection is not None :
+                #    self._curr_selection.deselect()
+                #    self._curr_selection = None
 
                 # Update the frame
                 self.update_frame(lastFrame, hold_recluster=True)
+
+        elif event.key == '+' :
+            self._alphaScale = min(100.0, self._alphaScale * 2)
+            self.update_frame(hold_recluster=True)
+
+        elif event.key == '-' :
+            self._alphaScale = max(0.001, self._alphaScale / 2.0)
+            self.update_frame(hold_recluster=True)
 
         elif event.key == 'r' :
             # Recalculate ellipsoids
@@ -586,7 +604,8 @@ class RadarDisplay(object) :
 
         elif event.key == 'c' :
             # Completely remove the features for this frame
-            if self._curr_selection is not None :
+            if (self._curr_selection is not None and
+                self._curr_selection.frame == self.frameIndex) :
                 self._curr_selection.deselect()
                 self._curr_selection = None
 
@@ -597,8 +616,9 @@ class RadarDisplay(object) :
             self.update_frame()
 
         elif event.key == 'd' :
-            # Delete the currently selected artist
-            if self._curr_selection is not None :
+            # Delete the currently selected artist (if in the current frame)
+            if (self._curr_selection is not None and
+                self._curr_selection.frame == self.frameIndex) :
                 self._curr_selection.deselect()
                 self._curr_selection.remove()
                 self._features[self.frameIndex].remove(self._curr_selection)
@@ -657,6 +677,7 @@ class RadarDisplay(object) :
                 h           Show this helpful menu
                 right       Step forward by one frame
                 left        Step back by one frame
+                +, -        Rescale transparency as a function of time
                 o           Outline mode
                 s           Selection mode
                 r           (re)cluster this frame
@@ -815,20 +836,26 @@ class RadarDisplay(object) :
             # The closer to self.frameIndex, the more opaque
             alphaIncrem = 1.0 / len(self.radarData)
             preSlice = slice(self.frameIndex)
-            postSlice = slice(-1, self.frameIndex, -1)
+            postSlice = slice(self.frameIndex + 1, None)
             for index, features in enumerate(self._features[preSlice]) :
-                timeAlpha = 1.0 - ((self.frameIndex - index) * alphaIncrem)
+                framesFrom = self.frameIndex - index
+                timeAlpha = ((1.0 - (framesFrom * alphaIncrem)) **
+                             (1.0/self._alphaScale))
+                zorder = len(self.radarData) - framesFrom
                 for feat in features :
                     feat.set_visible(True)
                     feat.set_alpha(timeAlpha)
-                    feat.set_zorder(index + 1)
+                    feat.set_zorder(zorder)
 
             for index, features in enumerate(self._features[postSlice]) :
-                timeAlpha = 1.0 - ((self.frameIndex - index) * alphaIncrem)
+                framesFrom = index + 1
+                timeAlpha = ((1.0 - (framesFrom * alphaIncrem))**
+                             (1.0/self._alphaScale))
+                zorder = len(self.radarData) - framesFrom
                 for feat in features :
                     feat.set_visible(True)
                     feat.set_alpha(timeAlpha)
-                    feat.set_zorder(index + 1)
+                    feat.set_zorder(zorder)
         else :
             for index, features in enumerate(self._features) :
                 if index != self.frameIndex :
