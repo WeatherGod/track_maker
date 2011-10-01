@@ -22,6 +22,8 @@ import os.path
 from os import makedirs
 from datetime import datetime
 from textwrap import dedent
+from bisect import bisect_left
+from collections import defaultdict
 
 class RadarCache(object) :
     def __init__(self, files, cachewidth=3) :
@@ -213,15 +215,227 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
     return ellips
 
+class Track(object) :
+    def __init__(self, x, y, frames, features=None) :
+        self.obj = Line2D(x, y, color='b', lw=3, marker='.', ms=5)
+        self.frames = frames
+        self.features = features
+
+    #def foo(self, frameNum, feature) :
+    #    index = bisect_left(frameNum, self.frames)
+    #    if index == len(self.frames) :
+    #        self.frames.append(frameNum)
+    #        self.features.append(feature)
+            
+
+class StateManager(object) :
+    """
+    Manages the list of tracks and features to make sure any changes in
+    one results in changes to the other.
+    """
+    def __init__(self) :
+        self._tracks = []
+        # Features organized by frameNum
+        self._features = defaultdict(list)
+
+    def load_features(self, tracks, falarms, volume) :
+        #frameDiff = len(self.radarData) - len(self.volume['volume_data'])
+        #if len(self.volume['volume_data']) > 0 :
+        #    startIndex = self.volume['volume_data'][0]['frameNum']
+        #else :
+        #    startIndex = 0
+
+        #volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
+        #if len(volTimes) > 0 :
+        #    startTime = volTimes[0]
+        #    if len(volTimes) > 1 :
+        #        assumeDeltaT = np.median(np.diff(volTimes[::-1]))
+        #    else :
+        #        assumeDeltaT = 1.0
+        #else :
+        #    startTime = 0.0
+        #    assumeDeltaT = 1.0
+
+        #if frameDiff < 0 :
+        #    raise ValueError("Previous session had more frames than available"
+        #                     "input data frames")
+        #elif frameDiff > 0 :
+        #    newFrames = [{"volTime": (((len(self.volume['volume_data']) +
+        #                                index) * assumeDeltaT) + startTime),
+        #                  "frameNum": (len(self.volume['volume_data']) +
+        #                               index + startIndex),
+        #                  "stormCells": np.array([],
+        #                                         dtype=TrackUtils.corner_dtype)
+        #                  }
+        #                 for index in xrange(frameDiff)]
+        #    self.volume['volume_data'].extend(newFrames)
+        #    self.volume['frame_cnt'] = len(self.radarData)
+
+        # Features keyed by cornerID
+        allKnownFeats = {}
+        for index in xrange(len(volume['volume_data'])) :
+            cells = volume['volume_data'][index]['stormCells']
+            frameNum = volume['volume_data'][index]['frameNum']
+            
+            for cellIndex in xrange(len(cells)) :
+                newPoint = self._new_point(cells['xLocs'][cellIndex],
+                                           cells['yLocs'][cellIndex])
+                newFeat = Feature(frameNum, center=newPoint,
+                                  area=cells['sizes'][cellIndex])
+                self._features[frameNum].append(newFeat)
+                allKnownFeats[cells['cornerIDs'][cellIndex]] = newFeat
+
+        for trackID, track in enumerate(tracks) :
+            newTrack = Track(track['xLocs'], track['yLocs'], track['frameNums'])
+            self._tracks.append(newTrack)
+
+            feats = []
+            for index, cornerID in enumerate(track['cornerIDs']) :
+                if cornerID in allKnownFeats :
+                    allKnownFeats[cornerID].track = newTrack
+                    feats.append(allKnownFeats[cornerID])
+                else :
+                    newPoint = self._new_point(track['xLocs'][index],
+                                               track['yLocs'][index])
+                    newFeat = Feature(track['frameNums'][index],
+                                      center=newPoint)
+                    self._features[track['frameNums'][index]].append(newFeat)
+                    feats.append(newFeat)
+                    newFeat.track = newTrack
+                    allKnownFeats[cornerID] = newFeat
+            newTrack.features = feats
+
+        for falarm in falarms :
+            if falarm['cornerIDs'][0] not in allKnownFeats :
+                newPoint = self._new_point(falarm['xLocs'][0],
+                                           falarm['yLocs'][0])
+                newFeat = Feature(falarm['frameNums'][0],
+                                  center=newPoint)
+                self._features[falarm['frameNums'][0]].append(newFeat)
+
+
+    def save_features(self) :
+        """
+        Update the track and volume data.
+        """
+        ## Gather the times that were examined (and thus known)
+        #data_times = []
+        #data_frames = []
+        #for index, aTime in enumerate(self.volTimes) :
+        #    if aTime is not None :
+        #        timeDiff = (aTime - self.volTimes[0]).total_seconds()
+        #        data_times.append(timeDiff / 60.0)
+        #        data_frames.append(index)
+
+        #volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
+
+        # Assume that common known times between orig_volTime and
+        # data_times are the same
+        #for aTime, frame in zip(data_times, data_frames) :
+        #    if np.isnan(volTimes[frame]) :
+        #        volTimes[frame] = aTime
+
+        #if np.sum(np.isfinite(volTimes)) == 0 :
+        #    # There is no time information available to use
+        #    # So just do a np.arange()
+        #    volTimes = np.arange(len(self.volume))
+        #else :
+        #    # TODO: Try and fill in this data by assuming linear spacing
+        #    pass
+
+
+        # dictionary with "volume_data", "frameCnt", "corner_filestem"
+        #    and "volume_data" contains a list of dictionaries with
+        #    "volTime", "frameNum", "stormCells" where "stormCells" is
+        #    a numpy array of dtype corner_dtype
+        volume = {'frameCnt': 0,
+                  'corner_filestem': '',
+                  'volume_data': []}
+        tracks = []
+        falarms = []
+               
+        featIndex = 0
+        # cornerIDs keyed by feature objects
+        allKnownFeatures = {}
+        for frameNum, features in self._features.iteritems() :
+            # Any features that do not have a track are False Alarms
+            for index, feat in enumerate(features) :
+                allKnownFeatures[feat] = featIndex + index
+                if feat.track is None :
+                    pos = feat.center()
+                    tmp = np.array([(pos[0], pos[1], featIndex + index,
+                                     np.nan, np.nan, frameNum, 'F')],
+                                   dtype=TrackUtils.base_track_dtype)
+                    falarms.append(tmp)
+
+            # TODO: get volume times working
+            vol = {'volTime' : np.nan,
+                   'frameNum' : frameNum,
+                   'stormCells' : np.array([(feat.center()[0], feat.center()[1],
+                                             feat.area(), featIndex + i)
+                                            for i, feat in enumerate(features)],
+                                           dtype=TrackUtils.corner_dtype)}
+            volume['frameCnt'] += 1
+            volume['volume_data'].append(vol)
+            featIndex += len(features)
+
+        
+        for track in self._tracks :
+            tmp = np.array([(pos[0], pos[1], allKnownFeatures[feat],
+                             pos[0], pos[1], frameNum, 'M') for
+                            pos, feat, frameNum in zip(track.obj.get_data(),
+                                                       track.features,
+                                                       track.frames)],
+                           dtype=TrackUtils.base_track_dtype)
+            tracks.append(tmp)
+
+        return tracks, falarms, volume
+
+    def _new_point(self, x, y) :
+        return Circle((x, y), fc='red', picker=None,
+                      ec=Feature.orig_colors['center'], radius=6, lw=2,
+                      alpha=Feature.orig_alphas['center'])
+
+
+    def add_feature(self, frameIndex, feature) :
+        # TODO: may need to do some mapping of frameIndex to frameNum
+        self._features[frameIndex].append(feature)
+        feature.frame = frameIndex
+
+    def associate_features(self, feat1, feat2) :
+        newTrack = None
+
+        if feat1.track is not None :
+            if feat2.track is not None :
+                # TODO: need to update feat2.track's info
+                pass
+
+            feat2.track = feat1.track
+            # TODO: gotta update this track's Line2D
+
+        elif feat2.track is not None :
+            # Ah, maybe we are going backwards?
+            feat1.track = feat2.track
+            # TODO: more magic here...
+        else :
+            # Neither had an existing track, so start a new one!
+            # TODO: sort by frameNums
+            xs, ys = zip(feat1.center(), feat2.center())
+            newTrack = Track(xs, ys, [feat1.frame, feat2.frame], [feat1, feat2])
+            self._tracks.append(newTrack)
+            feat1.track = newTrack
+            feat2.track = newTrack
+
+        return newTrack
 
 class Feature(object) :
     orig_colors = {'contour': 'k', 'center': 'k', 'ellip': 'r'}
     orig_alphas = {'contour': 0.5, 'center': 0.75, 'ellip': 1.0}
     orig_zorders = {'contour': 1.0, 'center': 3.0, 'ellip': 2.0}
     def __init__(self, frame, contour=None, center=None, ellip=None,
-                       area=None) :
+                       area=None, track=None) :
         self.frame = frame
-        self.trackID = None
+        self.track = track
         self.objects = {}
         if contour is not None :
             self.objects['contour'] = contour
@@ -324,114 +538,6 @@ class Feature(object) :
 class RadarDisplay(object) :
     _increms = {'left': -1, 'right': 1}
 
-    def save_features(self) :
-        """
-        Update the track and volume data.
-        """
-        # Gather the times that were examined (and thus known)
-        data_times = []
-        data_frames = []
-        for index, aTime in enumerate(self.volTimes) :
-            if aTime is not None :
-                timeDiff = (aTime - self.volTimes[0]).total_seconds()
-                data_times.append(timeDiff / 60.0)
-                data_frames.append(index)
-
-        volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
-
-        # Assume that common known times between orig_volTime and
-        # data_times are the same
-        for aTime, frame in zip(data_times, data_frames) :
-            if np.isnan(volTimes[frame]) :
-                volTimes[frame] = aTime
-
-        if np.sum(np.isfinite(volTimes)) == 0 :
-            # There is no time information available to use
-            # So just do a np.arange()
-            volTimes = np.arange(len(self.volume))
-        else :
-            # TODO: Try and fill in this data by assuming linear spacing
-            pass
-
-        featIndex = 0
-
-        for frameIndex, features in enumerate(self._features) :
-            vol = self.volume['volume_data'][frameIndex]
-            vol['volTime'] = volTimes[frameIndex]
-            
-            strmCells = np.array([(feat.center()[0], feat.center()[1],
-                                   feat.area(), featIndex + i)
-                                  for i, feat in enumerate(features)],
-                                 dtype=TrackUtils.corner_dtype)
-            featIndex += len(features)
-            vol['stormCells'] = strmCells
-
-    def load_features(self) :
-        frameDiff = len(self.radarData) - len(self.volume['volume_data'])
-        if len(self.volume['volume_data']) > 0 :
-            startIndex = self.volume['volume_data'][0]['frameNum']
-        else :
-            startIndex = 0
-
-        volTimes = [vol['volTime'] for vol in self.volume['volume_data']]
-        if len(volTimes) > 0 :
-            startTime = volTimes[0]
-            if len(volTimes) > 1 :
-                assumeDeltaT = np.median(np.diff(volTimes[::-1]))
-            else :
-                assumeDeltaT = 1.0
-        else :
-            startTime = 0.0
-            assumeDeltaT = 1.0
-
-
-        if frameDiff < 0 :
-            raise ValueError("Previous session had more frames than available"
-                             "input data frames")
-        elif frameDiff > 0 :
-            newFrames = [{"volTime": (((len(self.volume['volume_data']) +
-                                        index) * assumeDeltaT) + startTime),
-                          "frameNum": (len(self.volume['volume_data']) +
-                                       index + startIndex),
-                          "stormCells": np.array([],
-                                                 dtype=TrackUtils.corner_dtype)
-                          }
-                         for index in xrange(frameDiff)]
-            self.volume['volume_data'].extend(newFrames)
-            self.volume['frame_cnt'] = len(self.radarData)
-
-        self._features = [[] for i in xrange(len(self.radarData))]
-        # Features keyed by cornerID
-        allKnownFeats = {}
-        for frameIndex in xrange(len(self.radarData)) :
-            cells = self.volume['volume_data'][frameIndex]['stormCells']
-            feats = self._features[frameIndex]
-            for cellIndex in xrange(len(cells)) :
-                newPoint = self._new_point(cells['xLocs'][cellIndex],
-                                           cells['yLocs'][cellIndex])
-                newFeat = Feature(frameIndex, center=newPoint,
-                                  area=cells['sizes'][cellIndex])
-                newFeat.set_visible(False)
-                feats.append(newFeat)
-                allKnownFeats[cells['cornerIDs'][cellIndex]] = newFeat
-
-        self._tracks = []
-        for trackID, track in enumerate(self.tracks) :
-            newTrack = Line2D(track['xLocs'], track['yLocs'],
-                              color='grey', lw=2, marker='.')
-            self._tracks.append(newTrack)
-            self.ax.add_artist(newTrack)
-            for index, cornerID in enumerate(track['cornerIDs']) :
-                if cornerID in allKnownFeats :
-                    allKnownFeats[cornerID].trackID = trackID
-                else :
-                    newPoint = self._new_point(track['xLocs'][index],
-                                               track['yLocs'][index])
-                    newFeat = Feature(track['frameNums'][index],
-                                      center=newPoint)
-                    newFeat.set_visible(False)
-                    self._features[track['frameNums'][index]].append(newFeat)
-
     def do_save_results(self) :
         return self._do_save
 
@@ -456,11 +562,19 @@ class RadarDisplay(object) :
         self.curr_lasso = None
         self.volTimes = [None] * len(self.radarData)
 
-        self.volume = volume
-        self.tracks = tracks
-        self.falarms = falarms
+        self.state = StateManager()
+        self.state.load_features(tracks, falarms, volume)
 
-        self.load_features()
+        for feats in self.state._features.values() :
+            for feat in feats :
+                for obj in feat.objects.values() :
+                    if obj is not None :
+                        obj.set_visible(False)
+                        self.ax.add_artist(obj)
+
+        for track in self.state._tracks :
+            track.obj.set_visible(True)
+            self.ax.add_artist(track.obj)
 
         self.frameIndex = 0
         self._show_features = False
@@ -482,9 +596,9 @@ class RadarDisplay(object) :
         #self.fig.canvas.mpl_connect('button_release_event',
         #                             self.process_click)
         self.fig.canvas.mpl_connect('button_press_event', self.onpress)
-        self.fig.canvas.mpl_connect('pick_event', self.onpick)
-        self._savefeats_cid = self.fig.canvas.mpl_connect('close_event',
-                                                          self.onclose)
+        #self.fig.canvas.mpl_connect('pick_event', self.onpick)
+        #self._savefeats_cid = self.fig.canvas.mpl_connect('close_event',
+        #                                                  self.onclose)
         self._do_save = True
 
         # Start in outline mode
@@ -502,26 +616,18 @@ class RadarDisplay(object) :
 
         print "Welcome to Track Maker! (press 'h' for menu of options)"
 
-    def _new_point(self, x, y) :
-        newpoint = Circle((x, y), fc='red', zorder=3, picker=None,
-                          ec=Feature.orig_colors['center'], radius=6, lw=2,
-                          alpha=Feature.orig_alphas['center'])
-        self.ax.add_artist(newpoint)
-        return newpoint
-
-
     def onpick(self, event) :
         """
         Track picker handler
         """
         pass
 
-    def onclose(self, event) :
-        """
-        Trigger a saving of data (Note: this isn't a saving to files,
-        but to the track lists and volume lists).
-        """
-        self.save_features()
+    #def onclose(self, event) :
+    #    """
+    #    Trigger a saving of data (Note: this isn't a saving to files,
+    #    but to the track lists and volume lists).
+    #    """
+    #    self.save_features()
 
 
     def onlasso(self, verts) :
@@ -532,8 +638,8 @@ class RadarDisplay(object) :
         newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
                           ec=Feature.orig_colors['contour'],
                           alpha=Feature.orig_alphas['contour'], picker=None)
-        self._features[self.frameIndex].append(Feature(contour=newPoly,
-                                                       frame=self.frameIndex))
+        self.state.add_feature(self.frameIndex, Feature(self.frameIndex,
+                                                        contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -562,45 +668,35 @@ class RadarDisplay(object) :
             if event.inaxes is not self.ax :
                 return
 
-            select = None
-            for feat in self._features[self.frameIndex] :
+            curr_select = None
+            for feat in self.state._features[self.frameIndex] :
                 if feat.contains(event) :
-                    select = feat
+                    curr_select = feat
+            prev_select = self._curr_selection
 
-            if select is not None :
-                if self._curr_selection is not None :
+            if curr_select is not None :
+                if prev_select is not None :
                     # TODO: Make a tracking association
-                    if (self._curr_selection.get_visible() and
-                        self.frameIndex != self._curr_selection.frame) :
+                    # TODO: May need some mapping of frameIndex to frameNum
+                    # This is only valid if I am able to see the previous
+                    # selection. This logic also makes it impossible to
+                    # have feat1 be the same object as feat2
+                    if (prev_select.get_visible() and
+                        self.frameIndex != prev_select.frame) :
                         # We are making associations across frames!
-                        if self._curr_selection.trackID is not None :
-                            select.trackID = self._curr_selection.trackID
-                            # TODO: gotta update this track's Line2D
-                            # and possibly select's previous track?
-                        elif select.trackID is not None :
-                            # Ah, maybe we are going backwards?
-                            self._curr_selection.trackID = select.trackID
-                            # TODO: more magic here...
-                        else :
-                            # Neither had an existing trackID, so start a new
-                            # one!
-                            xs, ys = zip(self._curr_selection.center(),
-                                         select.center())
-                            newTrack = Line2D(xs, ys,
-                                              color='grey', lw=2, marker='.')
-                            trackID = len(self._tracks)
-                            self._tracks.append(newTrack)
-                            self.ax.add_artist(newTrack)
-                            self._curr_selection.trackID = trackID
-                            select.trackID = trackID
+                        tmp = self.state.associate_features(prev_select,
+                                                            curr_select)
 
-                    self._curr_selection.deselect()
+                        if tmp is not None :
+                            self.ax.add_artist(tmp.obj)
 
-                if self._curr_selection is select :
+                    prev_select.deselect()
+
+                if prev_select is curr_select :
                     self._curr_selection = None
                 else :
-                    self._curr_selection = select
-                    self._curr_selection.select()
+                    self._curr_selection = curr_select
+                    curr_select.select()
 
             self.fig.canvas.draw_idle()
 
@@ -687,19 +783,19 @@ class RadarDisplay(object) :
             # Toogle save
             self._do_save = (not self._do_save)
             print "Do Save:", self._do_save
-            if not self._do_save :
-                if self._savefeats_cid is not None :
-                    self.fig.canvas.mpl_disconnect(self._savefeats_cid)
-                    self._savefeats_cid = None
-            else :
-                if self._savefeats_cid is None :
-                    self._savefeats_cid = self.fig.canvas.mpl_connect(
-                                            "close_event", self.onclose)
+            #if not self._do_save :
+            #    if self._savefeats_cid is not None :
+            #        self.fig.canvas.mpl_disconnect(self._savefeats_cid)
+            #        self._savefeats_cid = None
+            #else :
+            #    if self._savefeats_cid is None :
+            #        self._savefeats_cid = self.fig.canvas.mpl_connect(
+            #                                "close_event", self.onclose)
 
-        elif event.key == 'V' :
-            # Save features to memory NOW!
-            print "Converting to track and volume objects, NOW!"
-            self.save_features()
+        #elif event.key == 'V' :
+        #    # Save features to memory NOW!
+        #    print "Converting to track and volume objects, NOW!"
+        #    self.save_features()
 
         elif event.key == 'h' :
             # Print helpful Menu
@@ -722,9 +818,6 @@ class RadarDisplay(object) :
                 v           toggle saving features upon closing figure
                                 (this is useful if you detect an error and
                                  do not want to save bad data).
-                V           save (convert) features now
-                                (does not actually save features to file, but
-                                 only prepares them for saving to file).
 
                 Current Values
                 --------------
@@ -741,7 +834,7 @@ class RadarDisplay(object) :
             frame = self.frameIndex
 
         # Set the frame's features to invisible
-        for feat in self._features[frame] :
+        for feat in self.state._features[frame] :
             feat.set_visible(False)
             # Also reset their alpha values
             feat.set_alpha(1.0)
@@ -768,7 +861,7 @@ class RadarDisplay(object) :
 
         markers = np.zeros(data.shape, dtype=int)
 
-        for index, feat in enumerate(self._features[self.frameIndex]) :
+        for index, feat in enumerate(self.state._features[self.frameIndex]) :
             if 'contour' in feat.objects :
                 contr = feat.objects['contour']
                 res = points_inside_poly(zip(self.xs.flat, self.ys.flat),
@@ -790,7 +883,7 @@ class RadarDisplay(object) :
         # Set anything less than 20 dBZ as background
         markers[np.isnan(data) | (data < 20)] = -1
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
-        clustCnt = len(self._features[self.frameIndex])
+        clustCnt = len(self.state._features[self.frameIndex])
 
         cents = ndimg.center_of_mass(data, clustLabels,
                                      range(1, clustCnt + 1))
@@ -798,21 +891,24 @@ class RadarDisplay(object) :
                                self.xs, self.ys)
 
         for center, ellip, feat in zip(cents, ellipses,
-                                       self._features[self.frameIndex]) :
+                                       self.state._features[self.frameIndex]) :
             # Remove any other objects that may exist before adding
             # new objects to the feature.
             feat.cleanup(['contour'])
 
             if ellip is None :
                 continue
-                
+
             cent_indx = tuple(np.floor(center).astype(int).tolist())
-            newPoint = self._new_point(self.xs[cent_indx], self.ys[cent_indx])
-            if ellip is not None :
-                self.ax.add_artist(ellip)
+            # TODO: clean this up!
+            newPoint = self.state._new_point(self.xs[cent_indx],
+                                             self.ys[cent_indx])
+            self.ax.add_artist(ellip)
 
             feat.objects['center'] = newPoint
             feat.objects['ellip'] = ellip
+
+            # TODO: Update the track data if the feature already has a track
 
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
@@ -852,12 +948,12 @@ class RadarDisplay(object) :
             self._im.set_data(data['vals'][0])
 
         if force_recluster or any([('center' not in feat.objects) for
-                                   feat in self._features[self.frameIndex]]) :
+                            feat in self.state._features[self.frameIndex]]) :
             if not hold_recluster :
                 clustLabels, clustCnt = self.get_clusters()
 
         # Set features for this frame to visible
-        for feat in self._features[self.frameIndex] :
+        for feat in self.state._features[self.frameIndex] :
             feat.set_visible(True)
             # Return alpha back to normal
             feat.set_alpha(1.0)
@@ -870,10 +966,11 @@ class RadarDisplay(object) :
             # How much alpha should change for each frame from frameIndex
             # The closer to self.frameIndex, the more opaque
             alphaIncrem = 1.0 / len(self.radarData)
-            preSlice = slice(self.frameIndex)
-            postSlice = slice(self.frameIndex + 1, None)
-            for index, features in enumerate(self._features[preSlice]) :
-                framesFrom = self.frameIndex - index
+            for frameIndex, features in self.state._features.iteritems() :
+                if frameIndex == self.frameIndex :
+                    continue
+
+                framesFrom = np.abs(self.frameIndex - frameIndex)
                 timeAlpha = ((1.0 - (framesFrom * alphaIncrem)) **
                              (1.0/self._alphaScale))
                 zorder = len(self.radarData) - framesFrom
@@ -881,27 +978,20 @@ class RadarDisplay(object) :
                     feat.set_visible(True)
                     feat.set_alpha(timeAlpha)
                     feat.set_zorder(zorder)
-
-            for index, features in enumerate(self._features[postSlice]) :
-                framesFrom = index + 1
-                timeAlpha = ((1.0 - (framesFrom * alphaIncrem))**
-                             (1.0/self._alphaScale))
-                zorder = len(self.radarData) - framesFrom
-                for feat in features :
-                    feat.set_visible(True)
-                    feat.set_alpha(timeAlpha)
-                    feat.set_zorder(zorder)
         else :
-            for index, features in enumerate(self._features) :
-                if index != self.frameIndex :
+            # Make sure that these items are hidden
+            for frameIndex, features in self.state._features.iteritems() :
+                if frameIndex != self.frameIndex :
                     for feat in features :
                         feat.set_visible(False)
                         # Return alpha to normal
                         feat.set_alpha(1.0)
 
-        theDateTime = datetime.utcfromtimestamp(data['scan_time'])
         if self.volTimes[self.frameIndex] is None :
+            theDateTime = datetime.utcfromtimestamp(data['scan_time'])
             self.volTimes[self.frameIndex] = theDateTime
+        else :
+            theDateTime = self.volTimes[self.frameIndex]
 
         self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
         self.fig.canvas.draw_idle()
@@ -914,7 +1004,7 @@ def AnalyzeRadar(volume, tracks, falarms, radarFiles) :
     rd = RadarDisplay(volume, tracks, falarms, radarFiles)
     plt.show()
 
-    return rd.do_save_results()
+    return rd.do_save_results(), rd.state
 
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
@@ -956,16 +1046,20 @@ def main(args) :
         #    "volTime", "frameNum", "stormCells" where "stormCells" is
         #    a numpy array of dtype corner_dtype
         volume = TrackFileUtils.ReadCorners(volumeFile, volumeLoc)
+        sceneParams['corner_file'] = volume['corner_filestem']
 
 
     #reflectData = [LoadRastRadar(radarFile) for radarFile in args.input_files]
 
-    do_save = AnalyzeRadar(volume, tracks, falarms, args.input_files)
+    do_save, state = AnalyzeRadar(volume, tracks, falarms, args.input_files)
 
     if do_save :
         # Create the directory if it doesn't exist already
         if not os.path.exists(dirName) :
             makedirs(dirName)
+
+        tracks, falarms, volume = state.save_features()
+        volume['corner_filestem'] = sceneParams['corner_file']
 
         # Final save
         SaveState(paramFile, sceneParams, volumeFile, volume,
