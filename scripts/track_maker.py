@@ -2,6 +2,7 @@
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Circle, Polygon
+from matplotlib.lines import Line2D
 from matplotlib.widgets import Lasso
 from matplotlib.nxutils import points_inside_poly
 from matplotlib import rcParams
@@ -220,6 +221,7 @@ class Feature(object) :
     def __init__(self, frame, contour=None, center=None, ellip=None,
                        area=None) :
         self.frame = frame
+        self.trackID = None
         self.objects = {}
         if contour is not None :
             self.objects['contour'] = contour
@@ -399,6 +401,8 @@ class RadarDisplay(object) :
             self.volume['frame_cnt'] = len(self.radarData)
 
         self._features = [[] for i in xrange(len(self.radarData))]
+        # Features keyed by cornerID
+        allKnownFeats = {}
         for frameIndex in xrange(len(self.radarData)) :
             cells = self.volume['volume_data'][frameIndex]['stormCells']
             feats = self._features[frameIndex]
@@ -409,12 +413,24 @@ class RadarDisplay(object) :
                                   area=cells['sizes'][cellIndex])
                 newFeat.set_visible(False)
                 feats.append(newFeat)
+                allKnownFeats[cells['cornerIDs'][cellIndex]] = newFeat
 
-        self._tracks = [Line2D(track['xLocs'], track['yLocs'],
-                               color='grey', lw=2, marker='.', picker=True)
-                        for track in self.tracks]
-        for track in self._tracks :
-            self.ax.add_artist(track)
+        self._tracks = []
+        for trackID, track in enumerate(self.tracks) :
+            newTrack = Line2D(track['xLocs'], track['yLocs'],
+                              color='grey', lw=2, marker='.')
+            self._tracks.append(newTrack)
+            self.ax.add_artist(newTrack)
+            for index, cornerID in enumerate(track['cornerIDs']) :
+                if cornerID in allKnownFeats :
+                    allKnownFeats[cornerID].trackID = trackID
+                else :
+                    newPoint = self._new_point(track['xLocs'][index],
+                                               track['yLocs'][index])
+                    newFeat = Feature(track['frameNums'][index],
+                                      center=newPoint)
+                    newFeat.set_visible(False)
+                    self._features[track['frameNums'][index]].append(newFeat)
 
     def do_save_results(self) :
         return self._do_save
@@ -557,7 +573,26 @@ class RadarDisplay(object) :
                     if (self._curr_selection.get_visible() and
                         self.frameIndex != self._curr_selection.frame) :
                         # We are making associations across frames!
-                        pass
+                        if self._curr_selection.trackID is not None :
+                            select.trackID = self._curr_selection.trackID
+                            # TODO: gotta update this track's Line2D
+                            # and possibly select's previous track?
+                        elif select.trackID is not None :
+                            # Ah, maybe we are going backwards?
+                            self._curr_selection.trackID = select.trackID
+                            # TODO: more magic here...
+                        else :
+                            # Neither had an existing trackID, so start a new
+                            # one!
+                            xs, ys = zip(self._curr_selection.center(),
+                                         select.center())
+                            newTrack = Line2D(xs, ys,
+                                              color='grey', lw=2, marker='.')
+                            trackID = len(self._tracks)
+                            self._tracks.append(newTrack)
+                            self.ax.add_artist(newTrack)
+                            self._curr_selection.trackID = trackID
+                            select.trackID = trackID
 
                     self._curr_selection.deselect()
 
