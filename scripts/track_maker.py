@@ -221,12 +221,66 @@ class Track(object) :
         self.frames = frames
         self.features = features
 
-    #def foo(self, frameNum, feature) :
-    #    index = bisect_left(frameNum, self.frames)
-    #    if index == len(self.frames) :
-    #        self.frames.append(frameNum)
-    #        self.features.append(feature)
-            
+    def __len__(self) :
+        return len(self.frames)
+
+    def get_data(self) :
+        return zip(*self.obj.get_data())
+
+    def add_feature(self, feature) :
+        """
+        Add a feature to the track at feature's frameNum.
+        If there is already a feature at the frame, bump it out of
+        the track.
+        """
+        if feature.frame in self.frames :
+            index = self.frames.index(feature.frame)
+            self.remove_feature(self.features[index])
+
+        frameNum = feature.frame
+        index = bisect_left(self.frames, frameNum)
+        xs, ys = self.obj.get_data()
+        xs = list(xs)
+        ys = list(ys)
+        x, y = feature.center()
+        if index == len(self.frames) :
+            self.frames.append(frameNum)
+            self.features.append(feature)
+            xs.append(x)
+            ys.append(y)
+        else :
+            self.frames.insert(index, frameNum)
+            self.features.insert(index, feature)
+            xs.insert(index, x)
+            ys.insert(index, y)
+
+        self.obj.set_data(xs, ys)
+
+    def update_frame(self, frameNum) :
+        index = self.frames.index(frameNum)
+        xs, ys = self.obj.get_data()
+        x, y = self.features[index].center()
+        xs[index] = x
+        ys[index] = y
+        self.obj.set_data(xs, ys)
+
+    def remove_feature(self, feature) :
+        index = self.features.index(feature)
+        xs, ys = self.obj.get_data()
+        xs = list(xs)
+        ys = list(ys)
+        xs.pop(index)
+        ys.pop(index)
+        self.frames.pop(index)
+        self.features.pop(index)
+        self.obj.set_data(xs, ys)
+        if feature.track is self :
+            feature.track = None
+
+    def remove(self) :
+        if self.obj is not None :
+            self.obj.remove()
+
 
 class StateManager(object) :
     """
@@ -383,7 +437,7 @@ class StateManager(object) :
         for track in self._tracks :
             tmp = np.array([(pos[0], pos[1], allKnownFeatures[feat],
                              pos[0], pos[1], frameNum, 'M') for
-                            pos, feat, frameNum in zip(track.obj.get_data(),
+                            pos, feat, frameNum in zip(track.get_data(),
                                                        track.features,
                                                        track.frames)],
                            dtype=TrackUtils.base_track_dtype)
@@ -397,29 +451,63 @@ class StateManager(object) :
                       alpha=Feature.orig_alphas['center'])
 
 
-    def add_feature(self, frameIndex, feature) :
+    def add_feature(self, feature) :
         # TODO: may need to do some mapping of frameIndex to frameNum
-        self._features[frameIndex].append(feature)
-        feature.frame = frameIndex
+        self._features[feature.frame].append(feature)
+
+    def remove_feature(self, feature) :
+        self._features[feature.frame].remove(feature)
+        self._cleanup_feature(feature)
+        if len(self._features[feature.frame]) == 0 :
+            self._features.pop(feature.frame)
+
+    def _cleanup_feature(self, feature) :
+        if feature.track is not None :
+            # The remove_feature() function to be called could
+            # set feature.track to None, so we preserve a reference
+            # to that track so that we can clean it up afterwards.
+            track = feature.track
+            track.remove_feature(feature)
+            if len(track) == 0 :
+                self._tracks.remove(track)
+                # There is no more track to show, so remove it
+                # from the axes.
+                track.remove()
+            feature.track = None
+
+    def clear_frame(self, frame) :
+        frameCnt = len(self._features[frame])
+        for featIndex in xrange(frameCnt) :
+            feat = self._features[frame].pop()
+            self._cleanup_feature(self, feat)
+        
+        self._features.pop(frame)
 
     def associate_features(self, feat1, feat2) :
         newTrack = None
 
         if feat1.track is not None :
             if feat2.track is not None :
-                # TODO: need to update feat2.track's info
-                pass
+                if feat1.track is feat2.track :
+                    # Already associated, so no need to do anything
+                    return
+                feat2.track.remove_feature(feat2)
 
             feat2.track = feat1.track
-            # TODO: gotta update this track's Line2D
+            feat1.track.add_feature(feat2)
 
         elif feat2.track is not None :
             # Ah, maybe we are going backwards?
             feat1.track = feat2.track
-            # TODO: more magic here...
+            feat2.track.add_feature(feat1)
         else :
             # Neither had an existing track, so start a new one!
-            # TODO: sort by frameNums
+            if feat1.frame > feat2.frame :
+                # Keep them sorted by frame
+                tmp = feat2
+                feat2 = feat1
+                feat1 = tmp
+
             xs, ys = zip(feat1.center(), feat2.center())
             newTrack = Track(xs, ys, [feat1.frame, feat2.frame], [feat1, feat2])
             self._tracks.append(newTrack)
@@ -638,8 +726,7 @@ class RadarDisplay(object) :
         newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
                           ec=Feature.orig_colors['contour'],
                           alpha=Feature.orig_alphas['contour'], picker=None)
-        self.state.add_feature(self.frameIndex, Feature(self.frameIndex,
-                                                        contour=newPoly))
+        self.state.add_feature(Feature(self.frameIndex, contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -698,7 +785,7 @@ class RadarDisplay(object) :
                     self._curr_selection = curr_select
                     curr_select.select()
 
-            self.fig.canvas.draw_idle()
+                self.fig.canvas.draw_idle()
 
 
     def process_key(self, event) :
@@ -740,9 +827,7 @@ class RadarDisplay(object) :
                 self._curr_selection.deselect()
                 self._curr_selection = None
 
-            for feat in self._features[self.frameIndex] :
-                feat.remove()
-            self._features[self.frameIndex] = []
+            self.state.clear_features(self.frameIndex)
 
             self.update_frame()
 
@@ -752,7 +837,7 @@ class RadarDisplay(object) :
                 self._curr_selection.frame == self.frameIndex) :
                 self._curr_selection.deselect()
                 self._curr_selection.remove()
-                self._features[self.frameIndex].remove(self._curr_selection)
+                self.state.remove_feature(self._curr_selection)
                 self._curr_selection = None
 
             self.fig.canvas.draw_idle()
@@ -908,7 +993,8 @@ class RadarDisplay(object) :
             feat.objects['center'] = newPoint
             feat.objects['ellip'] = ellip
 
-            # TODO: Update the track data if the feature already has a track
+            if feat.track is not None :
+                feat.track.update_frame(self.frameIndex)
 
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
