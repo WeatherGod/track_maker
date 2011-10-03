@@ -146,9 +146,12 @@ def ConsistentDomain(radarFiles) :
     minLon = None
     maxLat = None
     maxLon = None
+    volTimes = []
 
     for fname in radarFiles :
         data = LoadRastRadar(fname)
+
+        volTimes.append(datetime.utcfromtimestamp(data['scan_time']))
         if minLat is not None :
             minLat = min(data['lats'].min(), minLat)
             minLon = min(data['lons'].min(), minLon)
@@ -160,7 +163,7 @@ def ConsistentDomain(radarFiles) :
             maxLat = data['lats'].max()
             maxLon = data['lons'].max()
 
-    return (minLat, minLon, maxLat, maxLon)
+    return (minLat, minLon, maxLat, maxLon, volTimes)
 
 def GetBoundary(reslabels, index) :
     curmask = (reslabels == index)
@@ -287,10 +290,11 @@ class StateManager(object) :
     Manages the list of tracks and features to make sure any changes in
     one results in changes to the other.
     """
-    def __init__(self) :
+    def __init__(self, volTimes=None) :
         self._tracks = []
         # Features organized by frameNum
         self._features = defaultdict(list)
+        self._volTimes = volTimes
 
     def load_features(self, tracks, falarms, volume) :
         #frameDiff = len(self.radarData) - len(self.volume['volume_data'])
@@ -327,9 +331,9 @@ class StateManager(object) :
 
         # Features keyed by cornerID
         allKnownFeats = {}
-        for index in xrange(len(volume['volume_data'])) :
-            cells = volume['volume_data'][index]['stormCells']
-            frameNum = volume['volume_data'][index]['frameNum']
+        for frameID, vol in enumerate(volume['volume_data']) :
+            cells = vol['stormCells']
+            frameNum = vol['frameNum']
             
             for cellIndex in xrange(len(cells)) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
@@ -397,6 +401,17 @@ class StateManager(object) :
         #    # TODO: Try and fill in this data by assuming linear spacing
         #    pass
 
+        # Use the self._volTimes array, if available and if the frame numbers
+        # for the features make sense.
+        if (self._volTimes is not None and
+            len(self._volTimes) >= max(self._features.keys()) and
+            len(self._volTimes) > 0) :
+            # times in minutes
+            volTimes = [(aTime - self._volTimes[0]).total_seconds()/60.0 for
+                        aTime in self._volTimes]
+        else :
+            # Just assume volume times of increments of one.
+            volTimes = np.arange(max(self._features.keys()))
 
         # dictionary with "volume_data", "frameCnt", "corner_filestem"
         #    and "volume_data" contains a list of dictionaries with
@@ -407,7 +422,7 @@ class StateManager(object) :
                   'volume_data': []}
         tracks = []
         falarms = []
-               
+
         featIndex = 0
         # cornerIDs keyed by feature objects
         allKnownFeatures = {}
@@ -423,7 +438,7 @@ class StateManager(object) :
                     falarms.append(tmp)
 
             # TODO: get volume times working
-            vol = {'volTime' : np.nan,
+            vol = {'volTime' : volTimes[frameNum],
                    'frameNum' : frameNum,
                    'stormCells' : np.array([(feat.center()[0], feat.center()[1],
                                              feat.area(), featIndex + i)
@@ -634,7 +649,7 @@ class RadarDisplay(object) :
         Create an interactive display for creating track data
         from radar data.
         """
-        minLat, minLon, maxLat, maxLon = ConsistentDomain(radarFiles)
+        minLat, minLon, maxLat, maxLon, volTimes = ConsistentDomain(radarFiles)
 
 
         self.fig = plt.figure()
@@ -648,9 +663,9 @@ class RadarDisplay(object) :
         self._curr_selection = None
         self._alphaScale = 1.0
         self.curr_lasso = None
-        self.volTimes = [None] * len(self.radarData)
+        self.volTimes = volTimes
 
-        self.state = StateManager()
+        self.state = StateManager(volTimes)
         self.state.load_features(tracks, falarms, volume)
 
         for feats in self.state._features.values() :
