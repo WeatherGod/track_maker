@@ -572,8 +572,7 @@ class Feature(object) :
             return self.feat_area
         elif self.objects.get('ellip', None) is not None :
             ellip = self.objects['ellip']
-            return 4 * ellip.height * ellip.width
-        # TODO: Get the correct equation...
+            return (np.pi * ellip.height * ellip.width) / 4.0
 
         return np.nan
 
