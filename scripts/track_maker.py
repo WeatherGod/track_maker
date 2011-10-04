@@ -692,6 +692,7 @@ class RadarDisplay(object) :
         self.ax.set_ylim(self.ys.min(), self.ys.max())
         self.ax.set_xlabel('X (km)')
         self.ax.set_ylabel('Y (km)')
+        self.ax.set_aspect('equal')
 
 
         self.fig.canvas.mpl_connect('key_press_event', self.process_key)
@@ -943,7 +944,7 @@ class RadarDisplay(object) :
         dataset = self.radarData.curr()
         data = dataset['vals'][0]
 
-        flat_data = data[data >= -20]
+        flat_data = data[data >= -40]
 
         clustLabels = np.empty(data.shape, dtype=int)
         clustLabels[:] = -1
@@ -951,6 +952,8 @@ class RadarDisplay(object) :
         if np.nanmin(flat_data) == np.nanmax(flat_data) :
             # can't cluster data with no change
             return clustLabels, 0
+
+        bad_data = (np.isnan(data) | (data < np.nanmin(flat_data)))
 
         bins = np.linspace(np.nanmin(flat_data),
                            np.nanmax(flat_data), 2**8)
@@ -979,12 +982,11 @@ class RadarDisplay(object) :
                 raise ValueError("Empty feature?")
 
 
-        # Set anything less than 20 dBZ as background
-        markers[np.isnan(data) | (data < 20)] = -1
+        markers[bad_data] = -1
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
         clustCnt = len(self.state._features[self.frameIndex])
 
-        cents = ndimg.center_of_mass(data, clustLabels,
+        cents = ndimg.center_of_mass(data_digitized, clustLabels,
                                      range(1, clustCnt + 1))
         ellipses = FitEllipses(clustLabels, range(1, clustCnt + 1),
                                self.xs, self.ys)
@@ -1042,10 +1044,11 @@ class RadarDisplay(object) :
         # Display current frame's radar image
         if self._im is None :
             self._im = MakeReflectPPI(data['vals'][0], self.ys, self.xs,
-                                      meth='im', ax=self.ax, colorbar=False,
-                                      axis_labels=False, zorder=0)
+                                      meth='pcmesh', ax=self.ax,
+                                      colorbar=False,
+                                      axis_labels=False, zorder=0, mask=False)
         else :
-            self._im.set_data(data['vals'][0])
+            self._im.set_array(data['vals'][0, :-1, :-1].flatten())
 
         if force_recluster or any([('center' not in feat.objects) for
                             feat in self.state._features[self.frameIndex]]) :
