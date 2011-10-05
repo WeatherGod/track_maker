@@ -10,6 +10,6 @@ setup(
     license = "BSD",
     keywords = "track analysis",
     url = "https://github.com/WeatherGod/track_maker",
-    scripts = ['scripts/track_maker']
+    scripts = ['scripts/track_maker.py']
     )
 
