@@ -76,7 +76,7 @@ class RadarCache(object) :
 
 
         # are we on the left edge of the cache?
-        elif self._cacheIndex <= 0 :
+        elif self._cacheIndex < 0 :
             # is the cache at the maximum size?
             if len(self._cacher) >= self._cachewidth :
                 self._cacher.pop()
@@ -494,7 +494,7 @@ class StateManager(object) :
         frameCnt = len(self._features[frame])
         for featIndex in xrange(frameCnt) :
             feat = self._features[frame].pop()
-            self._cleanup_feature(self, feat)
+            self._cleanup_feature(feat)
         
         self._features.pop(frame)
 
@@ -842,7 +842,7 @@ class RadarDisplay(object) :
                 self._curr_selection.deselect()
                 self._curr_selection = None
 
-            self.state.clear_features(self.frameIndex)
+            self.state.clear_frame(self.frameIndex)
 
             self.update_frame()
 
@@ -953,11 +953,11 @@ class RadarDisplay(object) :
             # can't cluster data with no change
             return clustLabels, 0
 
-        bad_data = (np.isnan(data) | (data < np.nanmin(flat_data)))
+        bad_data = (np.isnan(data) | (data <= np.nanmin(flat_data)))
 
         bins = np.linspace(np.nanmin(flat_data),
                            np.nanmax(flat_data), 2**8)
-        data_digitized = np.digitize(data.flat, bins[::-1])
+        data_digitized = np.digitize(data.flat, bins)
         data_digitized.shape = data.shape
         data_digitized = data_digitized.astype('uint8')
 
@@ -1005,6 +1005,7 @@ class RadarDisplay(object) :
             newPoint = self.state._new_point(self.xs[cent_indx],
                                              self.ys[cent_indx])
             self.ax.add_artist(ellip)
+            self.ax.add_artist(newPoint)
 
             feat.objects['center'] = newPoint
             feat.objects['ellip'] = ellip
