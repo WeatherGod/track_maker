@@ -995,7 +995,7 @@ class RadarDisplay(object) :
             # can't cluster data with no change
             return clustLabels, 0
 
-        bad_data = (np.isnan(data) | (data <= np.nanmin(flat_data)))
+        bad_data = (np.isnan(data) | (data <= 0.0))
 
         bins = np.linspace(np.nanmin(flat_data),
                            np.nanmax(flat_data), 2**8)
@@ -1028,7 +1028,7 @@ class RadarDisplay(object) :
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
         clustCnt = len(self.state._features[self.frameIndex])
 
-        cents = ndimg.center_of_mass(data_digitized, clustLabels,
+        cents = ndimg.center_of_mass(data**2, clustLabels,
                                      range(1, clustCnt + 1))
         ellipses = FitEllipses(clustLabels, range(1, clustCnt + 1),
                                self.xs, self.ys)
@@ -1219,11 +1219,21 @@ def main(args) :
                   origTrackFile, filtTrackFile, tracks, falarms,
                   polygonfile, polygons)
 
+def SortVolume(volumes) :
+    frames = [aVol['frameNum'] for aVol in volumes]
+    args = np.argsort(frames)
+    new_volumes = [None] * (max(frames) - min(frames) + 1)
+    for index, arg in enumerate(args) :
+        # TODO: Fill in missing frames
+        new_volumes[index] = volumes[arg]
+
+    return new_volumes
 
 def SaveState(paramFile, params, volumeFile, volume,
               origTrackFile, filtTrackFile, tracks, falarms,
               polygonfile, polygons) :
     # Do I need to update the Params?
+    volume['volume_data'] = SortVolume(volume['volume_data'])
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
                                volume['volume_data'],
                                path=os.path.dirname(volumeFile))
