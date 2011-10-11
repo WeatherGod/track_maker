@@ -24,6 +24,7 @@ from datetime import datetime
 from textwrap import dedent
 from bisect import bisect_left
 from collections import defaultdict
+from cPickle import load, dump
 
 class RadarCache(object) :
     def __init__(self, files, cachewidth=3) :
@@ -296,7 +297,7 @@ class StateManager(object) :
         self._features = defaultdict(list)
         self._volTimes = volTimes
 
-    def load_features(self, tracks, falarms, volume) :
+    def load_features(self, tracks, falarms, volume, polygons) :
         #frameDiff = len(self.radarData) - len(self.volume['volume_data'])
         #if len(self.volume['volume_data']) > 0 :
         #    startIndex = self.volume['volume_data'][0]['frameNum']
@@ -338,7 +339,15 @@ class StateManager(object) :
             for cellIndex in xrange(len(cells)) :
                 newPoint = self._new_point(cells['xLocs'][cellIndex],
                                            cells['yLocs'][cellIndex])
-                newFeat = Feature(frameNum, center=newPoint,
+                newPoly = None
+                if cells['cornerIDs'][cellIndex] in polygons :
+                    newPoly = Polygon(polygons[cells['cornerIDs'][cellIndex]],
+                                      lw=2, fc='gray', hatch='/', zorder=1,
+                                      ec=Feature.orig_colors['contour'],
+                                      alpha=Feature.orig_alphas['contour'],
+                                      picker=None)
+
+                newFeat = Feature(frameNum, center=newPoint, contour=newPoly,
                                   area=cells['sizes'][cellIndex])
                 self._features[frameNum].append(newFeat)
                 allKnownFeats[cells['cornerIDs'][cellIndex]] = newFeat
@@ -355,8 +364,17 @@ class StateManager(object) :
                 else :
                     newPoint = self._new_point(track['xLocs'][index],
                                                track['yLocs'][index])
+                    newPoly = None
+                    if cornerID in polygons :
+                        newPoly = Polygon(polygons[cornerID],
+                                          lw=2, fc='gray', hatch='/', zorder=1,
+                                          ec=Feature.orig_colors['contour'],
+                                          alpha=Feature.orig_alphas['contour'],
+                                          picker=None)
+
+
                     newFeat = Feature(track['frameNums'][index],
-                                      center=newPoint)
+                                      center=newPoint, contour=newPoly)
                     self._features[track['frameNums'][index]].append(newFeat)
                     feats.append(newFeat)
                     newFeat.track = newTrack
@@ -367,8 +385,17 @@ class StateManager(object) :
             if falarm['cornerIDs'][0] not in allKnownFeats :
                 newPoint = self._new_point(falarm['xLocs'][0],
                                            falarm['yLocs'][0])
+                newPoly = None
+                if falarm['cornerIDs'][0] in polygons :
+                    newPoly = Polygon(polygons[falarm['cornerIDs'][0]],
+                                      lw=2, fc='gray', hatch='/', zorder=1,
+                                      ec=Feature.orig_colors['contour'],
+                                      alpha=Feature.orig_alphas['contour'],
+                                      picker=None)
+
+
                 newFeat = Feature(falarm['frameNums'][0],
-                                  center=newPoint)
+                                  center=newPoint, contour=newPoly)
                 self._features[falarm['frameNums'][0]].append(newFeat)
 
 
@@ -423,6 +450,9 @@ class StateManager(object) :
         tracks = []
         falarms = []
 
+        # dict of (cornerID, polygon) key/value pairs
+        polygons = {}
+
         featIndex = 0
         # cornerIDs keyed by feature objects
         allKnownFeatures = {}
@@ -444,6 +474,8 @@ class StateManager(object) :
                                              feat.area(), featIndex + i)
                                             for i, feat in enumerate(features)],
                                            dtype=TrackUtils.corner_dtype)}
+            polygons.update((i + featIndex, feat.get_xy()) for
+                             i, feat in enumerate(features))
             volume['frameCnt'] += 1
             volume['volume_data'].append(vol)
             featIndex += len(features)
@@ -458,7 +490,7 @@ class StateManager(object) :
                            dtype=TrackUtils.base_track_dtype)
             tracks.append(tmp)
 
-        return tracks, falarms, volume
+        return tracks, falarms, volume, polygons
 
     def _new_point(self, x, y) :
         return Circle((x, y), fc='red', picker=None,
@@ -567,6 +599,16 @@ class Feature(object) :
 
         return (np.nan, np.nan)
 
+    def get_xy(self) :
+        if self.objects.get('contour', None) is not None :
+            return self.objects['contour'].get_xy()
+        elif self.objects.get('ellip', None) is not None :
+            return self.objects['ellip'].get_verts()
+        elif self.objects.get('center', None) is not None :
+            return [self.objects['center'].center]
+
+        return [(np.nan, np.nan)]
+
     def area(self) :
         if self.feat_area is not None :
             return self.feat_area
@@ -643,7 +685,7 @@ class RadarDisplay(object) :
     def do_save_results(self) :
         return self._do_save
 
-    def __init__(self, volume, tracks, falarms, radarFiles) :
+    def __init__(self, volume, tracks, falarms, polygons, radarFiles) :
         """
         Create an interactive display for creating track data
         from radar data.
@@ -665,7 +707,7 @@ class RadarDisplay(object) :
         self.volTimes = volTimes
 
         self.state = StateManager(volTimes)
-        self.state.load_features(tracks, falarms, volume)
+        self.state.load_features(tracks, falarms, volume, polygons)
 
         for feats in self.state._features.values() :
             for feat in feats :
@@ -1103,9 +1145,9 @@ class RadarDisplay(object) :
 
    
 
-def AnalyzeRadar(volume, tracks, falarms, radarFiles) :
+def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
 
-    rd = RadarDisplay(volume, tracks, falarms, radarFiles)
+    rd = RadarDisplay(volume, tracks, falarms, polygons, radarFiles)
     plt.show()
 
     return rd.do_save_results(), rd.state
@@ -1152,26 +1194,35 @@ def main(args) :
         volume = TrackFileUtils.ReadCorners(volumeFile, volumeLoc)
         sceneParams['corner_file'] = volume['corner_filestem']
 
+    # TODO: Temporary!
+    polygonfile = os.path.join(dirName, "polygons.foo")
+    polygons = {}
+
+    if os.path.exists(polygonfile) :
+        polygons = load(open(polygonfile, 'rb'))
 
     #reflectData = [LoadRastRadar(radarFile) for radarFile in args.input_files]
 
-    do_save, state = AnalyzeRadar(volume, tracks, falarms, args.input_files)
+    do_save, state = AnalyzeRadar(volume, tracks, falarms, polygons,
+                                  args.input_files)
 
     if do_save :
         # Create the directory if it doesn't exist already
         if not os.path.exists(dirName) :
             makedirs(dirName)
 
-        tracks, falarms, volume = state.save_features()
+        tracks, falarms, volume, polygons = state.save_features()
         volume['corner_filestem'] = sceneParams['corner_file']
 
         # Final save
         SaveState(paramFile, sceneParams, volumeFile, volume,
-                  origTrackFile, filtTrackFile, tracks, falarms)
+                  origTrackFile, filtTrackFile, tracks, falarms,
+                  polygonfile, polygons)
 
 
 def SaveState(paramFile, params, volumeFile, volume,
-              origTrackFile, filtTrackFile, tracks, falarms) :
+              origTrackFile, filtTrackFile, tracks, falarms,
+              polygonfile, polygons) :
     # Do I need to update the Params?
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
                                volume['volume_data'],
@@ -1179,6 +1230,9 @@ def SaveState(paramFile, params, volumeFile, volume,
     ParamUtils.SaveConfigFile(paramFile, params)
     TrackFileUtils.SaveTracks(origTrackFile, tracks, falarms)
     TrackFileUtils.SaveTracks(filtTrackFile, tracks, falarms)
+
+    # TODO: Save polygons in a better format
+    dump(polygons, open(polygonfile, 'wb'))
 
 
 if __name__ == '__main__' :
