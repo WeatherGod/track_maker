@@ -595,8 +595,6 @@ class Feature(object) :
         return any([item.contains(event)[0] for
                     item in self.objects.values()])
 
-
-
 class TM_ControlSys(BaseControlSys) :
     def __init__(self, fig, ax, rd, state) :
         BaseControlSys.__init__(self, fig, rd)
@@ -843,7 +841,6 @@ class TM_ControlSys(BaseControlSys) :
         visibleToggle = (not self._visible[frame])
         self._visible[frame] = visibleToggle
 
-
         # Set the frame's features to the visible boolean
         for feat in self.state._features[frame] :
             feat.set_visible(visibleToggle)
@@ -1015,9 +1012,14 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
     state.load_features(tracks, falarms, volume, polygons)
 
     data = radarData.curr()
+    radarName = data['station']
+    if radarName == 'NWRT' :
+        radarName = 'PAR'
+    radarSite = radarsites.ByName(radarName)[0]
+
     lons, lats = np.meshgrid(data['lons'], data['lats'])
-    xs, ys = LonLat2Cart((minLon + maxLon)/2.0,
-                         (minLat + maxLat)/2.0,
+    xs, ys = LonLat2Cart(radarSite['LON'],
+                         radarSite['LAT'],
                          lons, lats)
 
     fig = plt.figure()
