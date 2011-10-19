@@ -12,8 +12,8 @@ import ZigZag.TrackFileUtils as TrackFileUtils
 import ZigZag.TrackUtils as TrackUtils
 import ZigZag.ParamUtils as ParamUtils
 
-from BRadar.io import LoadRastRadar
-from BRadar.plotutils import MakeReflectPPI
+from BRadar.io import RadarCache, LoadRastRadar
+from BRadar.plotutils import RadarDisplay
 from BRadar.maputils import LonLat2Cart
 
 import numpy as np
@@ -25,122 +25,6 @@ from textwrap import dedent
 from bisect import bisect_left
 from collections import defaultdict
 from cPickle import load, dump
-
-class RadarCache(object) :
-    def __init__(self, files, cachewidth=3) :
-        """
-        Initialize a rolling caching reversible iterator object.
-
-        Each iteration returns the radar data loaded from the files.
-        If it is within the cache, then the data is loaded from memory.
-        If it is not within the cache, then load the data from the file.
-
-        *files*         list of strings
-            List of filenames containing radar data.
-
-        *cachewidth*    integer
-            Width of the rolling cache. Must be greater than one.
-
-        """
-        if cachewidth < 2 :
-            raise ValueError("cachewidth must be greater than 1")
-
-        self._filenames = files
-        self._cachewidth = cachewidth
-        self._startIndex = 0
-        self._endIndex = 0
-        self._currIndex = -1
-
-        self._cacheIndex = -1
-        self._cacher = []
-
-    def __iter__(self) :
-        return self
-
-    def curr(self, lookahead=0) :
-        return self._cacher[self._cacheIndex + lookahead]
-
-    def _check_cache_state(self) :
-        """
-        advance or step back the cache if needed, and adjust the index
-        """
-        filename = self._filenames[self._currIndex]
-        # are we on the right edge of the cache?
-        if self._cacheIndex >= len(self._cacher) :
-            # is the cache at the maximum size?
-            if len(self._cacher) >= self._cachewidth :
-                self._cacher.pop(0)
-                self._cacheIndex -= 1
-
-            # add an item to the right edge of the cache
-            self._cacher.append(LoadRastRadar(filename))
-
-
-        # are we on the left edge of the cache?
-        elif self._cacheIndex < 0 :
-            # is the cache at the maximum size?
-            if len(self._cacher) >= self._cachewidth :
-                self._cacher.pop()
-
-            # add an item to the left edge of the cache
-            self._cacher.insert(0, LoadRastRadar(filename))
-            self._cacheIndex += 1
-
-
-    def next(self) :
-        if self._currIndex < (len(self._filenames) - 1) :
-            self._currIndex += 1
-        else :
-            raise StopIteration
-
-        self._cacheIndex += 1
-        self._check_cache_state()
-        
-        return self.curr()
-
-    def peek_next(self) :
-        """
-        Advance cache only if you absolutely have to.
-
-        If there is nothing next, then return None.
-        """
-        if self._currIndex >= (len(self._filenames) - 1) :
-            return None
-
-        self._currIndex += 1
-        self._check_cache_state()
-        self._currIndex -= 1
-
-        return self.curr(1)
-
-    def prev(self) :
-        if self._currIndex > 0 :
-            self._currIndex -= 1
-        else :
-            raise StopIteration
-
-        self._cacheIndex -= 1
-        self._check_cache_state()
-
-        return self.curr()
-
-    def peek_prev(self) :
-        """
-        Step back the cache only if you absolutely have to.
-
-        If there is nothing previous, then return None.
-        """
-        if self._currIndex <= 0 :
-            return None
-
-        self._currIndex -= 1
-        self._check_cache_state()
-        self._currIndex += 1
-
-        return self.curr(-1)
-
-    def __len__(self) :
-        return len(self._filenames)
 
 def ConsistentDomain(radarFiles) :
     minLat = None
@@ -551,9 +435,7 @@ class StateManager(object) :
             # Neither had an existing track, so start a new one!
             if feat1.frame > feat2.frame :
                 # Keep them sorted by frame
-                tmp = feat2
-                feat2 = feat1
-                feat1 = tmp
+                feat1, feat2 = feat2, feat1
 
             xs, ys = zip(feat1.center(), feat2.center())
             newTrack = Track(xs, ys, [feat1.frame, feat2.frame], [feat1, feat2])
@@ -676,88 +558,105 @@ class Feature(object) :
     def contains(self, event) :
         return any([item.contains(event)[0] for
                     item in self.objects.values()])
- 
 
 
-class RadarDisplay(object) :
-    _increms = {'left': -1, 'right': 1}
+class BaseControlSys(object) :
+    def __init__(self, fig, ax, rd) :
+        self.fig = fig
+        self.ax = ax
+        self.rd = rd
 
-    def do_save_results(self) :
-        return self._do_save
+        fig.canvas.mpl_connect('key_press_event', self.process_key)
+        #fig.canvas.mpl_connect('button_release_event',
+        #                       self.process_click)
 
-    def __init__(self, volume, tracks, falarms, polygons, radarFiles) :
+
+        self.keymap = {'left' : {'func': self.step_back,
+                                 'help': "Step back display by one frame"},
+                       'right': {'func': self.step_forward,
+                                 'help': 'Step forward display by one frame'},
+                      }
+
+        self._clean_mplkeymap()
+
+
+    def _clean_mplkeymap(self) :
+        # TODO: Generalize this
+        # Need to remove some keys...
+        rcParams['keymap.fullscreen'] = []
+        rcParams['keymap.zoom'] = []
+        rcParams['keymap.save'] = []
+        for keymap in ('keymap.home', 'keymap.back', 'keymap.forward') :
+            for key in self.keymap :
+                if key in rcParams[keymap] :
+                    rcParams[keymap].remove(key)
+
+    def process_key(self, event) :
         """
-        Create an interactive display for creating track data
-        from radar data.
+        Key-press handler
         """
-        minLat, minLon, maxLat, maxLon, volTimes = ConsistentDomain(radarFiles)
+        if event.key in self.keymap :
+            self.keymap[event.key]['func']()
+            self.fig.canvas.draw_idle()
 
+    def step_back(self) :
+        self.rd.prev()
 
-        self.fig = plt.figure()
-        self.ax = self.fig.gca()
-        self.radarData = RadarCache(radarFiles, 4)
-        
-        self._increm_funcs = {'left': self.radarData.prev,
-                              'right': self.radarData.next}
+    def step_forward(self) :
+        self.rd.next()
 
-        self._im = None
+class TM_ControlSys(BaseControlSys) :
+    def __init__(self, fig, ax, rd, state) :
+        BaseControlSys.__init__(self, fig, ax, rd)
+
         self._curr_selection = None
         self._alphaScale = 1.0
-        self.curr_lasso = None
-        self.volTimes = volTimes
-
-        self.state = StateManager(volTimes)
-        self.state.load_features(tracks, falarms, volume, polygons)
+        self._curr_lasso = None
+        self._visible = {}
+        self.state = state
 
         for feats in self.state._features.values() :
             for feat in feats :
                 for obj in feat.objects.values() :
                     if obj is not None :
                         obj.set_visible(False)
-                        self.ax.add_artist(obj)
+                        ax.add_artist(obj)
 
         for track in self.state._tracks :
             track.obj.set_visible(True)
-            self.ax.add_artist(track.obj)
+            ax.add_artist(track.obj)
 
-        self.frameIndex = 0
         self._show_features = False
-        data = self.radarData.next()
-        lons, lats = np.meshgrid(data['lons'], data['lats'])
-        self.xs, self.ys = LonLat2Cart((minLon + maxLon)/2.0,
-                                       (minLat + maxLat)/2.0,
-                                        lons, lats)
-
-        self.update_frame()
-
-        self.ax.set_xlim(self.xs.min(), self.xs.max())
-        self.ax.set_ylim(self.ys.min(), self.ys.max())
-        self.ax.set_xlabel('X (km)')
-        self.ax.set_ylabel('Y (km)')
-        self.ax.set_aspect('equal')
-
-
-        self.fig.canvas.mpl_connect('key_press_event', self.process_key)
-        #self.fig.canvas.mpl_connect('button_release_event',
-        #                             self.process_click)
-        self.fig.canvas.mpl_connect('button_press_event', self.onpress)
-        #self.fig.canvas.mpl_connect('pick_event', self.onpick)
-        #self._savefeats_cid = self.fig.canvas.mpl_connect('close_event',
-        #                                                  self.onclose)
         self._do_save = True
 
         # Start in outline mode
         self._mode = 'o'
 
-        # Need to remove some keys...
-        rcParams['keymap.fullscreen'] = []
-        rcParams['keymap.home'].remove('r')
-        rcParams['keymap.home'].remove('h')
-        rcParams['keymap.back'].remove('left')
-        rcParams['keymap.forward'].remove('right')
-        rcParams['keymap.forward'].remove('v')
-        rcParams['keymap.zoom'] = []
-        rcParams['keymap.save'] = []
+        fig.canvas.mpl_connect('button_press_event', self.onpress)
+
+        # TODO: Add to keymap
+        self.keymap['+'] = {'func': self.increm_feature_alpha,
+                            'help': "Increase feature opacity"}
+        self.keymap['-'] = {'func': self.decrem_feature_alpha,
+                            'help': "Decrement feature opacity"}
+        self.keymap['r'] = {'func': self.recalculate_ellipses,
+                            'help': "Recalculate this frame's features"}
+        self.keymap['c'] = {'func': self.clear_frame,
+                            'help': "Remove all features in this frame"}
+        self.keymap['d'] = {'func': self.delete_feature,
+                            'help': "Delete selected feature"}
+        self.keymap['s'] = {'func': self.selection_mode,
+                            'help': "Selection mode"}
+        self.keymap['o'] = {'func': self.outline_mode,
+                            'help': "Outline mode"}
+        self.keymap['f'] = {'func': self.show_all_features,
+                            'help': "Toggle displaying all features"}
+        self.keymap['v'] = {'func': self.toggle_save,
+                            'help': "To save, or not save?"}
+        self.keymap['h'] = {'func': self.print_menu,
+                            'help': "Display this helpful menu"}
+
+        self._clean_mplkeymap()
 
         print "Welcome to Track Maker! (press 'h' for menu of options)"
 
@@ -767,13 +666,8 @@ class RadarDisplay(object) :
         """
         pass
 
-    #def onclose(self, event) :
-    #    """
-    #    Trigger a saving of data (Note: this isn't a saving to files,
-    #    but to the track lists and volume lists).
-    #    """
-    #    self.save_features()
-
+    def do_save_results(self) :
+        return self._do_save
 
     def onlasso(self, verts) :
         """
@@ -783,7 +677,7 @@ class RadarDisplay(object) :
         newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
                           ec=Feature.orig_colors['contour'],
                           alpha=Feature.orig_alphas['contour'], picker=None)
-        self.state.add_feature(Feature(self.frameIndex, contour=newPoly))
+        self.state.add_feature(Feature(self.rd.frameIndex, contour=newPoly))
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -813,20 +707,20 @@ class RadarDisplay(object) :
                 return
 
             curr_select = None
-            for feat in self.state._features[self.frameIndex] :
+            for feat in self.state._features[self.rd.frameIndex] :
                 if feat.contains(event) :
                     curr_select = feat
             prev_select = self._curr_selection
 
             if curr_select is not None :
                 if prev_select is not None :
-                    # TODO: Make a tracking association
+                    # Make a tracking association
                     # TODO: May need some mapping of frameIndex to frameNum
                     # This is only valid if I am able to see the previous
                     # selection. This logic also makes it impossible to
                     # have feat1 be the same object as feat2
                     if (prev_select.get_visible() and
-                        self.frameIndex != prev_select.frame) :
+                        self.rd.frameIndex != prev_select.frame) :
                         # We are making associations across frames!
                         tmp = self.state.associate_features(prev_select,
                                                             curr_select)
@@ -844,146 +738,121 @@ class RadarDisplay(object) :
 
                 self.fig.canvas.draw_idle()
 
+    def increm_feature_alpha(self) :
+        self._alphaScale = min(100.0, self._alphaScale * 2)
+        self.update_frame(hold_recluster=True)
 
-    def process_key(self, event) :
+    def decrem_feature_alpha(self) :
+        self._alphaScale = max(0.001, self._alphaScale / 2.0)
+        self.update_frame(hold_recluster=True)
+
+    def recalculate_ellipses(self) :
+        # Recalculate ellipsoids
+        self.update_frame(force_recluster=True, hold_recluster=False)
+
+    def clear_frame(self) :
+        # Completely remove the features for this frame
+        if (self._curr_selection is not None and
+            self._curr_selection.frame == self.rd.frameIndex) :
+            self._curr_selection.deselect()
+            self._curr_selection = None
+
+        self.state.clear_frame(self.rd.frameIndex)
+        #self.update_frame()
+
+    def delete_feature(self) :
+        # Delete the currently selected artist (if in the current frame)
+        if (self._curr_selection is not None and
+            self._curr_selection.frame == self.rd.frameIndex) :
+            self._curr_selection.deselect()
+            self._curr_selection.remove()
+            self.state.remove_feature(self._curr_selection)
+            self._curr_selection = None
+
+    def selection_mode(self) :
+        # set mode to "selection mode"
+        self._mode = 's'
+
+        # Just in case the canvas is still locked.
+        if self.curr_lasso is not None :
+            self.fig.canvas.widgetlock.release(self.curr_lasso)
+            del self.curr_lasso
+            self.curr_lasso = None
+        print "Selection Mode"
+
+    def outline_mode(self) :
+        # set mode to "outline mode"
+        self._mode = 'o'
+        print "Outline Mode"
+
+    def show_all_features(self) :
+        # Show/Hide all identified features across time
+        self._show_features = (not self._show_features)
+        print "Show features:", self._show_features
+        self.update_frame(hold_recluster=True)
+
+    def toggle_save(self) :
+        # Toogle save
+        self._do_save = (not self._do_save)
+        print "Do Save:", self._do_save
+
+    #elif event.key == 'V' :
+    #    # Save features to memory NOW!
+    #    print "Converting to track and volume objects, NOW!"
+    #    self.save_features()
+
+    def print_menu(self) :
+        # Print helpful Menu
+        print dedent("""
+            Track Maker
+            ===========
+
+            Key         Action
+            ------      -----------------------------""")
+
+        for key, act in self.keymap.iteritems() :
+            print "%11s %s" % (key, act['help'])
+
         """
-        Key-press handler
+            h           Show this helpful menu
+            right       Step forward by one frame
+            left        Step back by one frame
+            +, -        Rescale transparency as a function of time
+            o           Outline mode
+            s           Selection mode
+            r           (re)cluster this frame
+            c           clear this frame of visible features (toggle on/off)
+            d           delete the currently selected feature
+            s           show/hide all features across all time
+            v           toggle saving features upon closing figure
+                            (this is useful if you detect an error and
+                             do not want to save bad data).
         """
-        if event.key in RadarDisplay._increms :
-            if (0 <= (self.frameIndex + RadarDisplay._increms[event.key])
-                  <= (len(self.radarData) - 1)) :
-                lastFrame = self.frameIndex
-                self.frameIndex += RadarDisplay._increms[event.key]
 
-                # Update the radar data
-                self._increm_funcs[event.key]()
-
-                #if self._curr_selection is not None :
-                #    self._curr_selection.deselect()
-                #    self._curr_selection = None
-
-                # Update the frame
-                self.update_frame(lastFrame, hold_recluster=True)
-
-        elif event.key == '+' :
-            self._alphaScale = min(100.0, self._alphaScale * 2)
-            self.update_frame(hold_recluster=True)
-
-        elif event.key == '-' :
-            self._alphaScale = max(0.001, self._alphaScale / 2.0)
-            self.update_frame(hold_recluster=True)
-
-        elif event.key == 'r' :
-            # Recalculate ellipsoids
-            self.update_frame(force_recluster=True, hold_recluster=False)
-
-        elif event.key == 'c' :
-            # Completely remove the features for this frame
-            if (self._curr_selection is not None and
-                self._curr_selection.frame == self.frameIndex) :
-                self._curr_selection.deselect()
-                self._curr_selection = None
-
-            self.state.clear_frame(self.frameIndex)
-
-            self.update_frame()
-
-        elif event.key == 'd' :
-            # Delete the currently selected artist (if in the current frame)
-            if (self._curr_selection is not None and
-                self._curr_selection.frame == self.frameIndex) :
-                self._curr_selection.deselect()
-                self._curr_selection.remove()
-                self.state.remove_feature(self._curr_selection)
-                self._curr_selection = None
-
-            self.fig.canvas.draw_idle()
-
-        elif event.key == 's' :
-            # set mode to "selection mode"
-            self._mode = 's'
-
-            # Just in case the canvas is still locked.
-            if self.curr_lasso is not None :
-                self.fig.canvas.widgetlock.release(self.curr_lasso)
-                del self.curr_lasso
-                self.curr_lasso = None
-            print "Selection Mode"
-
-        elif event.key == 'o' :
-            # set mode to "outline mode"
-            self._mode = 'o'
-            print "Outline Mode"
-
-        elif event.key == 'f' :
-            # Show/Hide all identified features across time
-            self._show_features = (not self._show_features)
-            print "Show features:", self._show_features
-            self.update_frame(hold_recluster=True)
-
-        elif event.key == 'v' :
-            # Toogle save
-            self._do_save = (not self._do_save)
-            print "Do Save:", self._do_save
-            #if not self._do_save :
-            #    if self._savefeats_cid is not None :
-            #        self.fig.canvas.mpl_disconnect(self._savefeats_cid)
-            #        self._savefeats_cid = None
-            #else :
-            #    if self._savefeats_cid is None :
-            #        self._savefeats_cid = self.fig.canvas.mpl_connect(
-            #                                "close_event", self.onclose)
-
-        #elif event.key == 'V' :
-        #    # Save features to memory NOW!
-        #    print "Converting to track and volume objects, NOW!"
-        #    self.save_features()
-
-        elif event.key == 'h' :
-            # Print helpful Menu
-            print dedent("""
-                Track Maker
-                ===========
-
-                Key         Action
-                ------      -----------------------------
-                h           Show this helpful menu
-                right       Step forward by one frame
-                left        Step back by one frame
-                +, -        Rescale transparency as a function of time
-                o           Outline mode
-                s           Selection mode
-                r           (re)cluster this frame
-                c           clear this frame of existing features
-                d           delete the currently selected feature
-                s           show/hide all features across all time
-                v           toggle saving features upon closing figure
-                                (this is useful if you detect an error and
-                                 do not want to save bad data).
-
-                Current Values
-                --------------
-                    Current Frame: %d of %d
-                    Current Mode: %s
-                    Do save upon figure close: %s
-                    Show all features: %s
-                """ % (self.frameIndex + 1, len(self.radarData), self._mode,
-                       self._do_save, self._show_features))
+        print dedent("""
+            Current Values
+            --------------
+                Current Frame: %d of %d
+                Current Mode: %s
+                Do save upon figure close: %s
+                Show all features: %s
+            """ % (self.rd.frameIndex + 1,
+                   len(self.rd.radarData), self._mode,
+                   self._do_save, self._show_features))
 
 
     def _clear_frame(self, frame=None) :
         if frame is None :
-            frame = self.frameIndex
+            frame = self.rd.frameIndex
+
+        self._visible[frame] = (not self._visible[frame])
 
         # Set the frame's features to invisible
         for feat in self.state._features[frame] :
-            feat.set_visible(False)
-            # Also reset their alpha values
-            feat.set_alpha(1.0)
-            #feat.set_picker(None)
+            feat.set_visible(self._visible[frame])
 
     def get_clusters(self) :
-        dataset = self.radarData.curr()
+        dataset = self.rd.radarData.curr()
         data = dataset['vals'][0]
 
         flat_data = data[data >= -40]
@@ -1005,12 +874,12 @@ class RadarDisplay(object) :
 
         markers = np.zeros(data.shape, dtype=int)
 
-        for index, feat in enumerate(self.state._features[self.frameIndex]) :
+        for index, feat in enumerate(self.state._features[self.rd.frameIndex]) :
             if 'contour' in feat.objects :
                 contr = feat.objects['contour']
-                res = points_inside_poly(zip(self.xs.flat, self.ys.flat),
+                res = points_inside_poly(zip(self.rd.xs.flat, self.rd.ys.flat),
                                          contr.get_xy())
-                res.shape = self.xs.shape
+                res.shape = self.rd.xs.shape
                 markers[res] = index + 1
 
             # No contour available? Then fall back to just a point
@@ -1026,15 +895,15 @@ class RadarDisplay(object) :
 
         markers[bad_data] = -1
         ndimg.watershed_ift(data_digitized, markers, output=clustLabels)
-        clustCnt = len(self.state._features[self.frameIndex])
+        clustCnt = len(self.state._features[self.rd.frameIndex])
 
         cents = ndimg.center_of_mass(data**2, clustLabels,
                                      range(1, clustCnt + 1))
         ellipses = FitEllipses(clustLabels, range(1, clustCnt + 1),
-                               self.xs, self.ys)
+                               self.rd.xs, self.rd.ys)
 
         for center, ellip, feat in zip(cents, ellipses,
-                                       self.state._features[self.frameIndex]) :
+                                    self.state._features[self.rd.frameIndex]) :
             # Remove any other objects that may exist before adding
             # new objects to the feature.
             feat.cleanup(['contour'])
@@ -1044,8 +913,8 @@ class RadarDisplay(object) :
 
             cent_indx = tuple(np.floor(center).astype(int).tolist())
             # TODO: clean this up!
-            newPoint = self.state._new_point(self.xs[cent_indx],
-                                             self.ys[cent_indx])
+            newPoint = self.state._new_point(self.rd.xs[cent_indx],
+                                             self.rd.ys[cent_indx])
             self.ax.add_artist(ellip)
             self.ax.add_artist(newPoint)
 
@@ -1053,23 +922,22 @@ class RadarDisplay(object) :
             feat.objects['ellip'] = ellip
 
             if feat.track is not None :
-                feat.track.update_frame(self.frameIndex)
+                feat.track.update_frame(self.rd.frameIndex)
 
         #print "clust count:", clustCnt
         return clustLabels, clustCnt
 
     def _xy2grid(self, x, y) :
-        return (self.xs[0].searchsorted(x),
-                self.ys[:, 0].searchsorted(y))
-
+        return (self.rd.xs[0].searchsorted(x),
+                self.rd.ys[:, 0].searchsorted(y))
 
     def update_frame(self, lastFrame=None,
                            force_recluster=False, hold_recluster=False) :
         """
-        Redraw the current frame.  Calculate clusters if needed.
+        Redraw the features in the display.  Calculate clusters if needed.
 
         *lastFrame*         int (None)
-            If specified, make this frame's features invisible.
+            If specified, make that frame's features invisible.
 
         *force_recluster*   boolean (False)
             If True, do a recluster, even if it seems like it isn't needed.
@@ -1080,46 +948,38 @@ class RadarDisplay(object) :
             *force_recluster* is True.
         """
         if lastFrame is not None :
+            # Make sure there is an entry in self._visible so
+            # that it can be set to False in _clear_frame()
+            self._visible[lastFrame] = True
             self._clear_frame(lastFrame)
 
-        data = self.radarData.curr()
-
-        # Display current frame's radar image
-        if self._im is None :
-            self._im = MakeReflectPPI(data['vals'][0], self.ys, self.xs,
-                                      meth='pcmesh', ax=self.ax,
-                                      colorbar=False,
-                                      axis_labels=False, zorder=0, mask=False)
-        else :
-            self._im.set_array(data['vals'][0, :-1, :-1].flatten())
-
         if force_recluster or any([('center' not in feat.objects) for
-                            feat in self.state._features[self.frameIndex]]) :
+                            feat in self.state._features[self.rd.frameIndex]]) :
             if not hold_recluster :
                 clustLabels, clustCnt = self.get_clusters()
 
+        self._visible[self.rd.frameIndex] = True
         # Set features for this frame to visible
-        for feat in self.state._features[self.frameIndex] :
+        for feat in self.state._features[self.rd.frameIndex] :
             feat.set_visible(True)
             # Return alpha back to normal
             feat.set_alpha(1.0)
             # Put it on top
-            feat.set_zorder(len(self.radarData))
-            #feat.set_picker(True)
+            feat.set_zorder(len(self.rd.radarData))
 
         # Show the other features
         if self._show_features :
             # How much alpha should change for each frame from frameIndex
             # The closer to self.frameIndex, the more opaque
-            alphaIncrem = 1.0 / len(self.radarData)
+            alphaIncrem = 1.0 / len(self.rd.radarData)
             for frameIndex, features in self.state._features.iteritems() :
-                if frameIndex == self.frameIndex :
+                if frameIndex == self.rd.frameIndex :
                     continue
 
-                framesFrom = np.abs(self.frameIndex - frameIndex)
+                framesFrom = np.abs(self.rd.frameIndex - frameIndex)
                 timeAlpha = ((1.0 - (framesFrom * alphaIncrem)) **
                              (1.0/self._alphaScale))
-                zorder = len(self.radarData) - framesFrom
+                zorder = len(self.rd.radarData) - framesFrom
                 for feat in features :
                     feat.set_visible(True)
                     feat.set_alpha(timeAlpha)
@@ -1127,30 +987,56 @@ class RadarDisplay(object) :
         else :
             # Make sure that these items are hidden
             for frameIndex, features in self.state._features.iteritems() :
-                if frameIndex != self.frameIndex :
+                if frameIndex != self.rd.frameIndex :
                     for feat in features :
                         feat.set_visible(False)
                         # Return alpha to normal
                         feat.set_alpha(1.0)
 
-        if self.volTimes[self.frameIndex] is None :
-            theDateTime = datetime.utcfromtimestamp(data['scan_time'])
-            self.volTimes[self.frameIndex] = theDateTime
-        else :
-            theDateTime = self.volTimes[self.frameIndex]
+    def step_back(self) :
+        lastFrame = self.rd.frameIndex
+        BaseControlSys.step_back(self)
 
-        self.ax.set_title(theDateTime.strftime("%Y/%m/%d %H:%M:%S"))
-        self.fig.canvas.draw_idle()
+        if lastFrame != self.rd.frameIndex :
+            self.update_frame(lastFrame, hold_recluster=True)
+
+    def step_forward(self) :
+        lastFrame = self.rd.frameIndex
+        BaseControlSys.step_forward(self)
+
+        if lastFrame != self.rd.frameIndex :
+            self.update_frame(lastFrame, hold_recluster=True)
 
 
-   
 
 def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
 
-    rd = RadarDisplay(volume, tracks, falarms, polygons, radarFiles)
+    minLat, minLon, maxLat, maxLon, volTimes = ConsistentDomain(radarFiles)
+
+    radarData = RadarCache(radarFiles, 4)
+    state = StateManager(volTimes)
+    state.load_features(tracks, falarms, volume, polygons)
+
+    data = radarData.curr()
+    lons, lats = np.meshgrid(data['lons'], data['lats'])
+    xs, ys = LonLat2Cart((minLon + maxLon)/2.0,
+                         (minLat + maxLat)/2.0,
+                         lons, lats)
+
+    fig = plt.figure()
+    ax = fig.gca()
+    rd = RadarDisplay(ax, radarData, xs, ys)
+    ax.set_xlim(xs.min(), xs.max())
+    ax.set_ylim(ys.min(), ys.max())
+    ax.set_xlabel('X (km)')
+    ax.set_ylabel('Y (km)')
+    ax.set_aspect('equal')
+
+    cs = TM_ControlSys(fig, ax, rd, state)
+
     plt.show()
 
-    return rd.do_save_results(), rd.state
+    return cs.do_save_results(), state
 
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
@@ -1200,8 +1086,6 @@ def main(args) :
 
     if os.path.exists(polygonfile) :
         polygons = load(open(polygonfile, 'rb'))
-
-    #reflectData = [LoadRastRadar(radarFile) for radarFile in args.input_files]
 
     do_save, state = AnalyzeRadar(volume, tracks, falarms, polygons,
                                   args.input_files)
