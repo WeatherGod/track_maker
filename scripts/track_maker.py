@@ -104,9 +104,16 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
 class Track(object) :
     def __init__(self, x, y, frames, features=None) :
-        self.obj = Line2D(x, y, color='b', lw=3, marker='.', ms=5)
-        self.frames = frames
+        self.obj = Line2D(x, y, color='b', lw=2, marker='.', ms=5,
+                          zorder=(max(frames) + 1), alpha=0.7)
+        self.frames = list(frames)
         self.features = features
+
+        if features is not None :
+            # Color these feature dots (if they have them) to indicate
+            # that they have been associated.
+            for feat in features :
+                feat.mark_associated(True)
 
     def __len__(self) :
         return len(self.frames)
@@ -135,12 +142,15 @@ class Track(object) :
             self.features.append(feature)
             xs.append(x)
             ys.append(y)
+            self.obj.set_zorder(frameNum + 1)
         else :
             self.frames.insert(index, frameNum)
             self.features.insert(index, feature)
             xs.insert(index, x)
             ys.insert(index, y)
 
+        # Change face color to indicate that it is associated with a track
+        feature.mark_associated(True)
         self.obj.set_data(xs, ys)
 
     def update_frame(self, frameNum) :
@@ -160,6 +170,10 @@ class Track(object) :
         ys.pop(index)
         self.frames.pop(index)
         self.features.pop(index)
+
+        # Reset the face color to indicate that this feature is no longer
+        # associated with a track
+        feature.mark_associated(False)
         self.obj.set_data(xs, ys)
         if feature.track is self :
             feature.track = None
@@ -225,7 +239,7 @@ class StateManager(object) :
                 newPoly = None
                 if cells['cornerIDs'][cellIndex] in polygons :
                     newPoly = Polygon(polygons[cells['cornerIDs'][cellIndex]],
-                                      lw=2, fc='gray', hatch='/', zorder=1,
+                                      lw=2, fc='gray', hatch='\\', zorder=1,
                                       ec=Feature.orig_colors['contour'],
                                       alpha=Feature.orig_alphas['contour'],
                                       picker=None)
@@ -242,26 +256,29 @@ class StateManager(object) :
             feats = []
             for index, cornerID in enumerate(track['cornerIDs']) :
                 if cornerID in allKnownFeats :
-                    allKnownFeats[cornerID].track = newTrack
-                    feats.append(allKnownFeats[cornerID])
+                    newFeat = allKnownFeats[cornerID]
                 else :
                     newPoint = self._new_point(track['xLocs'][index],
                                                track['yLocs'][index])
                     newPoly = None
                     if cornerID in polygons :
                         newPoly = Polygon(polygons[cornerID],
-                                          lw=2, fc='gray', hatch='/', zorder=1,
+                                          lw=2, fc='gray', hatch='\\', zorder=1,
                                           ec=Feature.orig_colors['contour'],
                                           alpha=Feature.orig_alphas['contour'],
                                           picker=None)
 
-
                     newFeat = Feature(track['frameNums'][index],
                                       center=newPoint, contour=newPoly)
                     self._features[track['frameNums'][index]].append(newFeat)
-                    feats.append(newFeat)
-                    newFeat.track = newTrack
                     allKnownFeats[cornerID] = newFeat
+
+                newFeat.track = newTrack
+                feats.append(newFeat)
+                # Color the point to indicate that it is
+                # associated with a track.
+                newFeat.mark_associated(True)
+
             newTrack.features = feats
 
         for falarm in falarms :
@@ -377,7 +394,7 @@ class StateManager(object) :
 
     def _new_point(self, x, y) :
         return Circle((x, y), fc='red', picker=None,
-                      ec=Feature.orig_colors['center'], radius=6, lw=2,
+                      ec=Feature.orig_colors['center'], radius=4, lw=2,
                       alpha=Feature.orig_alphas['center'])
 
 
@@ -416,11 +433,26 @@ class StateManager(object) :
     def associate_features(self, feat1, feat2) :
         newTrack = None
 
+        # If either feature is missing its point, add it.
+        # I would rather this be elsewhere, but the refactor
+        # should handle that.
+        if 'center' not in feat1.objects :
+            newCent = self._new_point(*feat1.center())
+            feat1.objects['center'] = newCent
+            feat1.objects['contour'].get_axes().add_artist(newCent)
+            newCent.set_visible(True)
+
+        if 'center' not in feat2.objects :
+            newCent = self._new_point(*feat2.center())
+            feat2.objects['center'] = newCent
+            feat2.objects['contour'].get_axes().add_artist(newCent)
+            newCent.set_visible(True)
+
         if feat1.track is not None :
             if feat2.track is not None :
                 if feat1.track is feat2.track :
                     # Already associated, so no need to do anything
-                    return
+                    return newTrack
                 feat2.track.remove_feature(feat2)
 
             feat2.track = feat1.track
@@ -462,6 +494,10 @@ class Feature(object) :
 
         self.feat_area = area if (area is not None and
                                   not np.isnan(area)) else None
+
+    def mark_associated(self, assoc=True) :
+        if 'center' in self.objects :
+            self.objects['center'].set_facecolor('c' if assoc else 'r')
 
     def remove(self) :
         for key, item in self.objects.iteritems() :
