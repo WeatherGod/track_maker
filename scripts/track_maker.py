@@ -595,6 +595,8 @@ class Feature(object) :
         return any([item.contains(event)[0] for
                     item in self.objects.values()])
 
+
+
 class TM_ControlSys(BaseControlSys) :
     def __init__(self, fig, ax, rd, state) :
         BaseControlSys.__init__(self, fig, rd)
@@ -840,6 +842,7 @@ class TM_ControlSys(BaseControlSys) :
         # Toggle the visibility
         visibleToggle = (not self._visible[frame])
         self._visible[frame] = visibleToggle
+
 
         # Set the frame's features to the visible boolean
         for feat in self.state._features[frame] :
