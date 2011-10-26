@@ -1038,12 +1038,11 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
 
-
-
     paramFile = os.path.join(dirName, "simParams.conf")
-    newSession = (not os.path.exists(paramFile))
 
-    if newSession :
+    if os.path.exists(paramFile) :
+        sceneParams = ParamUtils.ReadSimulationParams(paramFile)
+    else :
         sceneParams = dict()
         sceneParams.update(ParamUtils.simDefaults)
         sceneParams.update(ParamUtils.trackerDefaults)
@@ -1054,8 +1053,7 @@ def main(args) :
         sceneParams.pop('simConfFile')
 
         sceneParams['simName'] = args.scenario
-    else :
-        sceneParams = ParamUtils.ReadSimulationParams(paramFile)
+
 
 
     origTrackFile = os.path.join(dirName, sceneParams['simTrackFile'])
@@ -1063,13 +1061,17 @@ def main(args) :
     volumeFile = os.path.join(dirName, sceneParams['inputDataFile'])
     volumeLoc = os.path.dirname(volumeFile)
 
-    if newSession :
-        tracks, falarms = [], []
-        volume = dict(frameCnt=0,
-                      corner_filestem=sceneParams['corner_file'],
-                      volume_data=[])
-    else :
+
+    tracks, falarms = [], []
+
+    if os.path.exists(origTrackFile) :
         tracks, falarms = TrackFileUtils.ReadTracks(origTrackFile)
+        
+
+    volume = dict(frameCnt=0,
+                  corner_filestem=sceneParams['corner_file'],
+                  volume_data=[])
+    if os.path.exists(volumeFile) :
         # dictionary with "volume_data", "frameCnt", "corner_filestem"
         #    and "volume_data" contains a list of dictionaries with
         #    "volTime", "frameNum", "stormCells" where "stormCells" is
@@ -1078,6 +1080,9 @@ def main(args) :
         sceneParams['corner_file'] = volume['corner_filestem']
 
     # TODO: Temporary!
+    # I would rather not do pickling, but I am pressed for time.
+    # Plus, if I intend to make it a part of the ZigZag system,
+    # then the name should be stored in the parameters file.
     polygonfile = os.path.join(dirName, "polygons.foo")
     polygons = {}
 
