@@ -15,6 +15,7 @@ import ZigZag.ParamUtils as ParamUtils
 from BRadar.io import LoadRastRadar
 from BRadar.plotutils import MakeReflectPPI
 from BRadar.maputils import LonLat2Cart
+import BRadar.radarsites as radarsites
 
 import numpy as np
 import scipy.ndimage as ndimg
@@ -759,9 +760,15 @@ class RadarDisplay(object) :
         self.frameIndex = 0
         self._show_features = False
         data = self.radarData.next()
+
+        radarName = data['station']
+        if radarName == 'NWRT' :
+            radarName = 'PAR'
+        radarSite = radarsites.ByName(radarName)[0]
+
         lons, lats = np.meshgrid(data['lons'], data['lats'])
-        self.xs, self.ys = LonLat2Cart((minLon + maxLon)/2.0,
-                                       (minLat + maxLat)/2.0,
+        self.xs, self.ys = LonLat2Cart(radarSite['LON'],
+                                       radarSite['LAT'],
                                         lons, lats)
 
         self.update_frame()
