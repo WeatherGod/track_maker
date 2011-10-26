@@ -14,6 +14,7 @@ import ZigZag.ParamUtils as ParamUtils
 from BRadar.io import RadarCache, LoadRastRadar
 from BRadar.plotutils import RadarDisplay, BaseControlSys
 from BRadar.maputils import LonLat2Cart
+import BRadar.radarsites as radarsites
 
 import numpy as np
 import scipy.ndimage as ndimg
