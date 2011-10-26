@@ -115,12 +115,19 @@ class Track(object) :
             # that they have been associated.
             for feat in features :
                 feat.mark_associated(True)
+                self._bookkeeping(feat)
 
     def __len__(self) :
         return len(self.frames)
 
     def get_data(self) :
         return zip(*self.obj.get_data())
+
+    def _bookkeeping(self, feat) :
+        if feat.track is not None and feat.track is not self :
+            feat.track.remove_feature(feat)
+
+        feat.track = self
 
     def add_feature(self, feature) :
         """
@@ -134,27 +141,69 @@ class Track(object) :
 
         frameNum = feature.frame
         index = bisect_left(self.frames, frameNum)
+
         xs, ys = self.obj.get_data()
         xs = list(xs)
         ys = list(ys)
+
         x, y = feature.center()
-        if index == len(self.frames) :
-            self.frames.append(frameNum)
-            self.features.append(feature)
-            xs.append(x)
-            ys.append(y)
-            self.obj.set_zorder(frameNum + 1)
-        else :
-            self.frames.insert(index, frameNum)
-            self.features.insert(index, feature)
-            xs.insert(index, x)
-            ys.insert(index, y)
+        self.frames.insert(index, frameNum)
+        self.features.insert(index, feature)
+        xs.insert(index, x)
+        ys.insert(index, y)
+        self.obj.set_zorder(max(self.frames) + 1)
 
         # Change face color to indicate that it is associated with a track
         feature.mark_associated(True)
         self.obj.set_data(xs, ys)
 
+        self._bookkeeping(feature)
+
+    def join(self, track) :
+        """
+        Merge this track with another track.
+
+        Also performs the needed bookkeeping.
+        """
+        # First, make sure they do not share any frames
+        shared_frames = (set(self.frames) & set(track.frames))
+        if len(shared_frames) > 0 :
+            raise ValueError("Can not join these tracks, they share frames.")
+
+        if len(track.frames) == 0 :
+            # Don't need to do anything...
+            return
+
+
+        xs, ys = self.obj.get_data()
+        xs = list(xs)
+        ys = list(ys)
+
+        insertInds = np.searchsorted(self.frames, track.frames)
+        newxs, newys = track.obj.get_data()
+
+        # Going in reverse so that the insertInds values are valid
+        for ind, feat, frame, newx, newy in reversed(zip(insertInds,
+                                                         track.features,
+                                                         track.frames,
+                                                         newxs, newys)) :
+            self.frames.insert(ind, frame)
+            self.features.insert(ind, feat)
+            xs.insert(ind, newx)
+            ys.insert(ind, newy)
+            self._bookkeeping(feat)
+            feat.mark_associated(True)
+
+        self.obj.set_zorder(max(self.frames) + 1)
+        self.obj.set_data(xs, ys)
+
+
     def update_frame(self, frameNum) :
+        """
+        Re-assess the point of the track at *frameNum*.
+
+        Useful when the Feature object gets an updated center location.
+        """
         index = self.frames.index(frameNum)
         xs, ys = self.obj.get_data()
         x, y = self.features[index].center()
@@ -163,6 +212,11 @@ class Track(object) :
         self.obj.set_data(xs, ys)
 
     def remove_feature(self, feature) :
+        """
+        Remove *feature* from this track.
+        Also performs any needed bookkeeping if it hasn't
+        occured already.
+        """
         index = self.features.index(feature)
         xs, ys = self.obj.get_data()
         xs = list(xs)
@@ -176,8 +230,30 @@ class Track(object) :
         # associated with a track
         feature.mark_associated(False)
         self.obj.set_data(xs, ys)
+
+        # Only modify this if it refers to itself
         if feature.track is self :
             feature.track = None
+
+    def breakup(self, feature) :
+        """
+        Breakup this track at the point where *feature* is.
+        This truncates *self* and returns a new Track object
+        that is composed of the features from *feature* and
+        later.
+        """
+        index = self.features.index(feature)
+        xs, ys = self.obj.get_data()
+        newTrack = Track(xs[index:], ys[index:], self.frames[index:])
+        for feat in self.features[index:] :
+            feat.track = newTrack
+        newTrack.features = self.features[index:]
+
+        self.frames = self.frames[:index]
+        self.features = self.features[:index]
+        self.obj.set_data(xs[:index], ys[:index])
+
+        return newTrack
 
     def remove(self) :
         if self.obj is not None :
@@ -235,20 +311,17 @@ class StateManager(object) :
             frameNum = vol['frameNum']
             
             for cellIndex in xrange(len(cells)) :
-                newPoint = self._new_point(cells['xLocs'][cellIndex],
-                                           cells['yLocs'][cellIndex])
+                newPoint = StateManager._new_point(cells['xLocs'][cellIndex],
+                                                   cells['yLocs'][cellIndex])
+                cornerID = cells['cornerIDs'][cellIndex]
                 newPoly = None
-                if cells['cornerIDs'][cellIndex] in polygons :
-                    newPoly = Polygon(polygons[cells['cornerIDs'][cellIndex]],
-                                      lw=2, fc='gray', hatch='\\', zorder=1,
-                                      ec=Feature.orig_colors['contour'],
-                                      alpha=Feature.orig_alphas['contour'],
-                                      picker=None)
+                if cornerID in polygons :
+                    newPoly = StateManager._new_polygon(polygons[cornerID])
 
                 newFeat = Feature(frameNum, center=newPoint, contour=newPoly,
                                   area=cells['sizes'][cellIndex])
                 self._features[frameNum].append(newFeat)
-                allKnownFeats[cells['cornerIDs'][cellIndex]] = newFeat
+                allKnownFeats[cornerID] = newFeat
 
         for trackID, track in enumerate(tracks) :
             newTrack = Track(track['xLocs'], track['yLocs'], track['frameNums'])
@@ -259,15 +332,11 @@ class StateManager(object) :
                 if cornerID in allKnownFeats :
                     newFeat = allKnownFeats[cornerID]
                 else :
-                    newPoint = self._new_point(track['xLocs'][index],
-                                               track['yLocs'][index])
+                    newPoint = StateManager._new_point(track['xLocs'][index],
+                                                       track['yLocs'][index])
                     newPoly = None
                     if cornerID in polygons :
-                        newPoly = Polygon(polygons[cornerID],
-                                          lw=2, fc='gray', hatch='\\', zorder=1,
-                                          ec=Feature.orig_colors['contour'],
-                                          alpha=Feature.orig_alphas['contour'],
-                                          picker=None)
+                        newPoly = StateManager._new_polygon(polygons[cornerID])
 
                     newFeat = Feature(track['frameNums'][index],
                                       center=newPoint, contour=newPoly)
@@ -284,16 +353,12 @@ class StateManager(object) :
 
         for falarm in falarms :
             if falarm['cornerIDs'][0] not in allKnownFeats :
-                newPoint = self._new_point(falarm['xLocs'][0],
-                                           falarm['yLocs'][0])
+                newPoint = StateManager._new_point(falarm['xLocs'][0],
+                                                   falarm['yLocs'][0])
                 newPoly = None
-                if falarm['cornerIDs'][0] in polygons :
-                    newPoly = Polygon(polygons[falarm['cornerIDs'][0]],
-                                      lw=2, fc='gray', hatch='/', zorder=1,
-                                      ec=Feature.orig_colors['contour'],
-                                      alpha=Feature.orig_alphas['contour'],
-                                      picker=None)
-
+                cornerID = falarm['cornerIDs'][0]
+                if cornerID in polygons :
+                    newPoly = StateManager._new_polygon(polygons[cornerID])
 
                 newFeat = Feature(falarm['frameNums'][0],
                                   center=newPoint, contour=newPoly)
@@ -404,11 +469,18 @@ class StateManager(object) :
 
         return tracks, falarms, volume, polygons
 
-    def _new_point(self, x, y) :
+    @staticmethod
+    def _new_point(x, y) :
         return Circle((x, y), fc='red', picker=None,
                       ec=Feature.orig_colors['center'], radius=4, lw=2,
                       alpha=Feature.orig_alphas['center'])
 
+    @staticmethod
+    def _new_polygon(verts) :
+        return Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
+                       ec=Feature.orig_colors['contour'],
+                       alpha=Feature.orig_alphas['contour'],
+                       picker=None)
 
     def add_feature(self, feature) :
         # TODO: may need to do some mapping of frameIndex to frameNum
@@ -434,57 +506,111 @@ class StateManager(object) :
                 track.remove()
             feature.track = None
 
+    def _cleanup(self) :
+        """
+        Remove any empty tracks.
+        """
+        for track in reversed(self._tracks) :
+            if len(track) == 0 :
+                self._tracks.remove(track)
+                track.remove()
+
     def clear_frame(self, frame) :
         frameCnt = len(self._features[frame])
         for featIndex in xrange(frameCnt) :
             feat = self._features[frame].pop()
-            self._cleanup_feature(feat)
-        
+            feat.remove()
+            feat.track = None
+
+        self._cleanup()
         self._features.pop(frame)
 
-    def associate_features(self, feat1, feat2) :
+    def associate_features(self, feat1, feat2, assoc_act) :
+        """
+        Perform the association of *feat1* and *feat2* into a single
+        track. If a new track is created, then return it.  Otherwise,
+        return None.
+
+        *assoc_act*     int : [0, 1, 2]
+            If both features already belong to their own tracks,
+            then the process of association will remove *feat2*
+            from its track and add it to *feat1*'s track.
+            This action is called 'steal', and happens when
+            *assoc_act* is 0.
+
+            However, if *assoc_act* is 1, then this association
+            process will 'join' the tracks together into one track, so
+            long as none of features share a common frame.
+            If a collision occurs, and exception is raised.
+
+            Next, if *assoc_act* is 2, then *feat2* is removed from
+            *feat1*'s track. This is the 'removal' mode.
+
+            Lastly, if *assoc_act* is 3, then this association process
+            will 'breakup' the tracks into two separate tracks.
+            A new track is created and is returned.
+
+            For the last two, nothing happens if both features do not
+            belong to the same track.
+        """
         newTrack = None
 
         # If either feature is missing its point, add it.
         # I would rather this be elsewhere, but the refactor
         # should handle that.
         if 'center' not in feat1.objects :
-            newCent = self._new_point(*feat1.center())
+            newCent = StateManager._new_point(*feat1.center())
             feat1.objects['center'] = newCent
             feat1.objects['contour'].get_axes().add_artist(newCent)
             newCent.set_visible(True)
 
         if 'center' not in feat2.objects :
-            newCent = self._new_point(*feat2.center())
+            newCent = StateManager._new_point(*feat2.center())
             feat2.objects['center'] = newCent
             feat2.objects['contour'].get_axes().add_artist(newCent)
             newCent.set_visible(True)
 
-        if feat1.track is not None :
-            if feat2.track is not None :
-                if feat1.track is feat2.track :
-                    # Already associated, so no need to do anything
-                    return newTrack
-                feat2.track.remove_feature(feat2)
+        if assoc_act in [0, 1] :
+            # Steal Mode
+            if feat1.track is not None :
+                if feat2.track is not None :
+                    if feat1.track is feat2.track :
+                        # Already associated, so no need to do anything
+                        return newTrack
+                    else :
+                        if assoc_act == 1 :
+                            feat1.track.join(feat2.track)
+                        else :
+                            feat1.track.add_feature(feat2)
+                    self._cleanup()
+                else :
+                    feat1.track.add_feature(feat2)
 
-            feat2.track = feat1.track
-            feat1.track.add_feature(feat2)
+            elif feat2.track is not None :
+                # Ah, maybe we are going backwards?
+                feat2.track.add_feature(feat1)
+            else :
+                # Neither had an existing track, so start a new one!
+                if feat1.frame > feat2.frame :
+                    # Keep them sorted by frame
+                    feat1, feat2 = feat2, feat1
 
-        elif feat2.track is not None :
-            # Ah, maybe we are going backwards?
-            feat1.track = feat2.track
-            feat2.track.add_feature(feat1)
-        else :
-            # Neither had an existing track, so start a new one!
-            if feat1.frame > feat2.frame :
-                # Keep them sorted by frame
-                feat1, feat2 = feat2, feat1
+                xs, ys = zip(feat1.center(), feat2.center())
+                newTrack = Track(xs, ys, [feat1.frame, feat2.frame],
+                                 [feat1, feat2])
+                self._tracks.append(newTrack)
 
-            xs, ys = zip(feat1.center(), feat2.center())
-            newTrack = Track(xs, ys, [feat1.frame, feat2.frame], [feat1, feat2])
-            self._tracks.append(newTrack)
-            feat1.track = newTrack
-            feat2.track = newTrack
+        elif assoc_act in [2, 3] :
+            if (feat1.track is not None and feat2.track is not None
+                and feat1.track is feat2.track) :
+                if assoc_act == 2 :
+                    # Removal mode
+                    feat1.track.remove_feature(feat2)
+                    self._cleanup()
+                else :
+                    # Breakup mode
+                    newTrack = feat1.track.breakup(feat2)
+                    self._tracks.append(newTrack)
 
         return newTrack
 
@@ -655,6 +781,7 @@ class Feature(object) :
 
 
 class TM_ControlSys(BaseControlSys) :
+    _assoc_mode_list = ['steal', 'join', 'remove', 'breakup']
     def __init__(self, fig, ax, rd, state) :
         BaseControlSys.__init__(self, fig, rd)
 
@@ -683,6 +810,9 @@ class TM_ControlSys(BaseControlSys) :
         # Start in outline mode
         self._mode = 'o'
 
+        # Start in 'steal' association mode
+        self._assoc_mode = 0
+
         fig.canvas.mpl_connect('button_press_event', self.onpress)
 
         # TODO: Add to keymap
@@ -700,12 +830,16 @@ class TM_ControlSys(BaseControlSys) :
                             'help': "Selection mode"}
         self.keymap['o'] = {'func': self.outline_mode,
                             'help': "Outline mode"}
+        self.keymap['a'] = {'func': self.toggle_assoc_mode,
+                            'help': "Toggle association mode "
+                                    + str(TM_ControlSys._assoc_mode_list)}
         self.keymap['f'] = {'func': self.show_all_features,
                             'help': "Toggle displaying all features"}
         self.keymap['v'] = {'func': self.toggle_save,
                             'help': "To save, or not save?"}
         self.keymap['h'] = {'func': self.print_menu,
                             'help': "Display this helpful menu"}
+
 
         self._clean_mplkeymap()
 
@@ -731,9 +865,9 @@ class TM_ControlSys(BaseControlSys) :
         newFeat = Feature(self.rd.frameIndex, contour=newPoly)
         self.state.add_feature(newFeat)
         self.fig.canvas.draw_idle()
-        self.fig.canvas.widgetlock.release(self.curr_lasso)
-        del self.curr_lasso
-        self.curr_lasso = None
+        self.fig.canvas.widgetlock.release(self._curr_lasso)
+        del self._curr_lasso
+        self._curr_lasso = None
         self.ax.add_artist(newPoly)
 
     def onpress(self, event) :
@@ -747,11 +881,11 @@ class TM_ControlSys(BaseControlSys) :
             if event.inaxes is not self.ax :
                 return
 
-            self.curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
-                                    self.onlasso)
+            self._curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
+                                     self.onlasso)
 
             # Set a lock on drawing the lasso until finished
-            self.fig.canvas.widgetlock(self.curr_lasso)
+            self.fig.canvas.widgetlock(self._curr_lasso)
 
         elif self._mode == 's':
             # Selection mode
@@ -766,16 +900,15 @@ class TM_ControlSys(BaseControlSys) :
 
             if curr_select is not None :
                 if prev_select is not None :
-                    # Make a tracking association
-                    # TODO: May need some mapping of frameIndex to frameNum
                     # This is only valid if I am able to see the previous
                     # selection. This logic also makes it impossible to
                     # have feat1 be the same object as feat2
                     if (prev_select.get_visible() and
                         self.rd.frameIndex != prev_select.frame) :
-                        # We are making associations across frames!
+                        # Perform an association action across frames!
                         tmp = self.state.associate_features(prev_select,
-                                                            curr_select)
+                                                            curr_select,
+                                                            self._assoc_mode)
 
                         if tmp is not None :
                             self.ax.add_artist(tmp.obj)
@@ -826,16 +959,22 @@ class TM_ControlSys(BaseControlSys) :
         self._mode = 's'
 
         # Just in case the canvas is still locked.
-        if self.curr_lasso is not None :
-            self.fig.canvas.widgetlock.release(self.curr_lasso)
-            del self.curr_lasso
-            self.curr_lasso = None
+        if self._curr_lasso is not None :
+            self.fig.canvas.widgetlock.release(self._curr_lasso)
+            del self._curr_lasso
+            self._curr_lasso = None
         print "Selection Mode"
 
     def outline_mode(self) :
         # set mode to "outline mode"
         self._mode = 'o'
         print "Outline Mode"
+
+    def toggle_assoc_mode(self) :
+        self._assoc_mode = ((self._assoc_mode + 1) %
+                            len(TM_ControlSys._assoc_mode_list))
+        print "Association Action:", \
+              TM_ControlSys._assoc_mode_list[self._assoc_mode]
 
     def show_all_features(self) :
         # Show/Hide all identified features across time
@@ -865,31 +1004,17 @@ class TM_ControlSys(BaseControlSys) :
         for key, act in self.keymap.iteritems() :
             print "%11s %s" % (key, act['help'])
 
-        """
-            h           Show this helpful menu
-            right       Step forward by one frame
-            left        Step back by one frame
-            +, -        Rescale transparency as a function of time
-            o           Outline mode
-            s           Selection mode
-            r           (re)cluster this frame
-            c           clear this frame of visible features (toggle on/off)
-            d           delete the currently selected feature
-            s           show/hide all features across all time
-            v           toggle saving features upon closing figure
-                            (this is useful if you detect an error and
-                             do not want to save bad data).
-        """
-
         print dedent("""
             Current Values
             --------------
                 Current Frame: %d of %d
                 Current Mode: %s
+                Association Method: %s
                 Do save upon figure close: %s
                 Show all features: %s
             """ % (self.rd.frameIndex + 1,
                    len(self.rd.radarData), self._mode,
+                   TM_ControlSys._assoc_mode_list[self._assoc_mode],
                    self._do_save, self._show_features))
 
 
