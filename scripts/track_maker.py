@@ -5,7 +5,6 @@ from matplotlib.patches import Ellipse, Circle, Polygon
 from matplotlib.lines import Line2D
 from matplotlib.widgets import Lasso
 from matplotlib.nxutils import points_inside_poly
-from matplotlib import rcParams
 #from mpl_toolkits.basemap import Basemap
 
 import ZigZag.TrackFileUtils as TrackFileUtils
@@ -13,7 +12,7 @@ import ZigZag.TrackUtils as TrackUtils
 import ZigZag.ParamUtils as ParamUtils
 
 from BRadar.io import RadarCache, LoadRastRadar
-from BRadar.plotutils import RadarDisplay
+from BRadar.plotutils import RadarDisplay, BaseControlSys
 from BRadar.maputils import LonLat2Cart
 
 import numpy as np
@@ -560,66 +559,24 @@ class Feature(object) :
                     item in self.objects.values()])
 
 
-class BaseControlSys(object) :
-    def __init__(self, fig, ax, rd) :
-        self.fig = fig
-        self.ax = ax
-        self.rd = rd
-
-        fig.canvas.mpl_connect('key_press_event', self.process_key)
-        #fig.canvas.mpl_connect('button_release_event',
-        #                       self.process_click)
-
-
-        self.keymap = {'left' : {'func': self.step_back,
-                                 'help': "Step back display by one frame"},
-                       'right': {'func': self.step_forward,
-                                 'help': 'Step forward display by one frame'},
-                      }
-
-        self._clean_mplkeymap()
-
-
-    def _clean_mplkeymap(self) :
-        # TODO: Generalize this
-        # Need to remove some keys...
-        rcParams['keymap.fullscreen'] = []
-        rcParams['keymap.zoom'] = []
-        rcParams['keymap.save'] = []
-        for keymap in ('keymap.home', 'keymap.back', 'keymap.forward') :
-            for key in self.keymap :
-                if key in rcParams[keymap] :
-                    rcParams[keymap].remove(key)
-
-    def process_key(self, event) :
-        """
-        Key-press handler
-        """
-        if event.key in self.keymap :
-            self.keymap[event.key]['func']()
-            self.fig.canvas.draw_idle()
-
-    def step_back(self) :
-        self.rd.prev()
-
-    def step_forward(self) :
-        self.rd.next()
 
 class TM_ControlSys(BaseControlSys) :
     def __init__(self, fig, ax, rd, state) :
-        BaseControlSys.__init__(self, fig, ax, rd)
+        BaseControlSys.__init__(self, fig, rd)
 
+        self.ax = ax
         self._curr_selection = None
         self._alphaScale = 1.0
         self._curr_lasso = None
         self._visible = {}
         self.state = state
 
-        for feats in self.state._features.values() :
+        for frame, feats in self.state._features.iteritems() :
+            isCurrFrame = (frame == self.rd.frameIndex)
             for feat in feats :
                 for obj in feat.objects.values() :
                     if obj is not None :
-                        obj.set_visible(False)
+                        obj.set_visible(isCurrFrame)
                         ax.add_artist(obj)
 
         for track in self.state._tracks :
@@ -845,11 +802,14 @@ class TM_ControlSys(BaseControlSys) :
         if frame is None :
             frame = self.rd.frameIndex
 
-        self._visible[frame] = (not self._visible[frame])
+        # Toggle the visibility
+        visibleToggle = (not self._visible[frame])
+        self._visible[frame] = visibleToggle
 
-        # Set the frame's features to invisible
+
+        # Set the frame's features to the visible boolean
         for feat in self.state._features[frame] :
-            feat.set_visible(self._visible[frame])
+            feat.set_visible(visibleToggle)
 
     def get_clusters(self) :
         dataset = self.rd.radarData.curr()
