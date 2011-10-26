@@ -1189,7 +1189,8 @@ class TM_ControlSys(BaseControlSys) :
 
 
 
-def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
+def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
+                 useOldTransform=False) :
 
     minLat, minLon, maxLat, maxLon, volTimes = ConsistentDomain(radarFiles)
 
@@ -1204,8 +1205,13 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
     radarSite = radarsites.ByName(radarName)[0]
 
     lons, lats = np.meshgrid(data['lons'], data['lats'])
-    xs, ys = LonLat2Cart(radarSite['LON'],
-                         radarSite['LAT'],
+
+    cent_lon, cent_lat = (((minLon + maxLon) / 2.0,
+                           (minLat + maxLat) / 2.0)
+                         if useOldTransform else
+                          (radarSite['LON'], radarSite['LAT']))
+
+    xs, ys = LonLat2Cart(cent_lon, cent_lat,
                          lons, lats)
 
     fig = plt.figure()
@@ -1276,7 +1282,8 @@ def main(args) :
         polygons = load(open(polygonfile, 'rb'))
 
     radarData, state, rd, cs = AnalyzeRadar(volume, tracks, falarms, polygons,
-                                            args.input_files)
+                                            args.input_files,
+                                            args.useOldCoords)
 
     # Activate the display.
     plt.show()
@@ -1336,6 +1343,9 @@ if __name__ == '__main__' :
     parser.add_argument("-d", "--dir", dest="path", type=str,
                         help="Base directory for SCENARIO (not for INPUT).",
                         metavar="PATH", default='.')
+    parser.add_argument("--old_coords", dest='useOldCoords',
+                        action='store_true',
+                        help='Use old coordinate transform')
 
     args = parser.parse_args()
 
