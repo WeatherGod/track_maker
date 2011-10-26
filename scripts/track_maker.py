@@ -300,7 +300,7 @@ class StateManager(object) :
                 self._features[falarm['frameNums'][0]].append(newFeat)
 
 
-    def save_features(self) :
+    def save_features(self, xs, ys) :
         """
         Update the track and volume data.
         """
@@ -341,6 +341,9 @@ class StateManager(object) :
             # Just assume volume times of increments of one.
             volTimes = np.arange(max(self._features.keys()))
 
+        gridx_grads = np.gradient(xs)
+        gridy_grads = np.gradient(ys)
+
         # dictionary with "volume_data", "frameCnt", "corner_filestem"
         #    and "volume_data" contains a list of dictionaries with
         #    "volTime", "frameNum", "stormCells" where "stormCells" is
@@ -361,6 +364,14 @@ class StateManager(object) :
             # Any features that do not have a track are False Alarms
             for index, feat in enumerate(features) :
                 allKnownFeatures[feat] = featIndex + index
+
+                if np.isnan(feat.area()) and ('contour' in feat.objects) :
+                    feat.feat_area = Feature.calc_area_polygon(xs, ys,
+                                                               feat.get_xy(),
+                                                               gridx_grads,
+                                                               gridy_grads)
+
+
                 if feat.track is None :
                     pos = feat.center()
                     tmp = np.array([(pos[0], pos[1], featIndex + index,
@@ -536,6 +547,52 @@ class Feature(object) :
 
         return np.nan
 
+    @staticmethod
+    def calc_area_mask(featMask, dxdj, dxdi, dydj, dydi) :
+        """
+        Core portion of calculating an area assuming that
+        there is a gradient information of the domain grid
+        and a boolean mask indicating where in the grid the feature
+        exists.
+
+        Approximates the area by assuming rhombus-shaped voxels.
+        """
+        a = np.hypot(dxdj[featMask], dydj[featMask])
+        b = np.hypot(dxdi[featMask], dydi[featMask])
+        dA = a * b
+        return np.sum(dA)
+
+    @staticmethod
+    def calc_area_polygon(xs, ys, verts,
+                          gridx_grads=None, gridy_grads=None) :
+        """
+        Calculate the area of a feature based on knowledge
+        of the domain grid gradients and the polygon of the
+        feature.
+
+        *xs*, *ys* are the domain grids. 2-D numpy arrays.
+
+        *verts* must be a list of x-y tuples.
+
+        *gridx_grads*, *gridy_grads* are expected to be tuples from
+            np.gradient() of *xs* and *ys* respectively.
+            If not supplied, it will be calculated from *xs*, *ys*.
+
+        Works by determining the mask and calling
+        :meth:`calc_area_mask` to get the area.
+        """
+        if gridx_grads is None :
+            gridx_grads = np.gradient(xs)
+        if gridy_grads is None :
+            gridy_grads = np.gradient(ys)
+
+        res = points_inside_poly(zip(xs.flat, ys.flat), verts)
+        res.shape = xs.shape
+
+        return Feature.calc_area_mask(res, gridx_grads[0], gridx_grads[1],
+                                           gridy_grads[0], gridy_grads[1])
+
+
     def cleanup(self, hold=()) :
         """
         Remove all objects (except those specified by *hold*.
@@ -671,7 +728,8 @@ class TM_ControlSys(BaseControlSys) :
         newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
                           ec=Feature.orig_colors['contour'],
                           alpha=Feature.orig_alphas['contour'], picker=None)
-        self.state.add_feature(Feature(self.rd.frameIndex, contour=newPoly))
+        newFeat = Feature(self.rd.frameIndex, contour=newPoly)
+        self.state.add_feature(newFeat)
         self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self.curr_lasso)
         del self.curr_lasso
@@ -1036,9 +1094,7 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles) :
 
     cs = TM_ControlSys(fig, ax, rd, state)
 
-    plt.show()
-
-    return cs.do_save_results(), state
+    return radarData, state, rd, cs
 
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
@@ -1094,15 +1150,18 @@ def main(args) :
     if os.path.exists(polygonfile) :
         polygons = load(open(polygonfile, 'rb'))
 
-    do_save, state = AnalyzeRadar(volume, tracks, falarms, polygons,
-                                  args.input_files)
+    radarData, state, rd, cs = AnalyzeRadar(volume, tracks, falarms, polygons,
+                                            args.input_files)
 
-    if do_save :
+    # Activate the display.
+    plt.show()
+
+    if cs.do_save_results() :
         # Create the directory if it doesn't exist already
         if not os.path.exists(dirName) :
             makedirs(dirName)
 
-        tracks, falarms, volume, polygons = state.save_features()
+        tracks, falarms, volume, polygons = state.save_features(rd.xs, rd.ys)
         volume['corner_filestem'] = sceneParams['corner_file']
 
         # Final save
