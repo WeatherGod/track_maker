@@ -906,6 +906,9 @@ class TM_ControlSys(BaseControlSys) :
 
         frame_feats = self.state._features[self.rd.frameIndex]
         cents = [feat.center() for feat in frame_feats]
+        if len(cents) == 0 :
+            cents = np.empty((0, 2))
+
         res = points_inside_poly(cents, verts)
 
         # Reset any existing selections
