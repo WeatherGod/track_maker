@@ -788,6 +788,7 @@ class TM_ControlSys(BaseControlSys) :
         self.ax = ax
         self._curr_selection = None
         self._group_selection = []
+        self._group_polygon = None
         self._alphaScale = 1.0
         self._curr_lasso = None
         self._visible = {}
@@ -862,9 +863,7 @@ class TM_ControlSys(BaseControlSys) :
         Creation of the contour polygon, which selects the initial
         region for watershed clustering.
         """
-        newPoly = Polygon(verts, lw=2, fc='gray', hatch='/', zorder=1,
-                          ec=Feature.orig_colors['contour'],
-                          alpha=Feature.orig_alphas['contour'], picker=None)
+        newPoly = StateManager._new_polygon(verts)
         newFeat = Feature(self.rd.frameIndex, contour=newPoly)
         self.state.add_feature(newFeat)
         self.fig.canvas.draw_idle()
@@ -875,10 +874,36 @@ class TM_ControlSys(BaseControlSys) :
 
     def lasso_selection(self, verts) :
         """
-        Create a polygon for selecting many features.
+        Create a polygon for selecting many features in a frame
 
         Such a selection can only be used for deletion
         """
+        self.select_group(verts)
+
+        if self._group_polygon is not None :
+            self._group_polygon.remove()
+
+        self._group_polygon = Polygon(verts, fc='None', visible=True)
+        self.ax.add_artist(self._group_polygon)
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.widgetlock.release(self._curr_lasso)
+        del self._curr_lasso
+        self._curr_lasso = None
+
+    def select_group(self, verts=None) :
+        """
+        Select all features in the current frame that has centers within
+        the polygon described by *verts*, which is a Nx2 array of x-y coords.
+
+        If None, then use the last available group selection verticies.
+        """
+        if verts is None :
+            if self._group_polygon is not None :
+                verts = self._group_polygon.get_xy()
+            else :
+                verts = np.empty((0, 2))
+
         frame_feats = self.state._features[self.rd.frameIndex]
         cents = [feat.center() for feat in frame_feats]
         res = points_inside_poly(cents, verts)
@@ -889,19 +914,13 @@ class TM_ControlSys(BaseControlSys) :
             self._curr_selection = None
 
         for feat in self._group_selection :
-            feat.deselect()            
+            feat.deselect()
 
         self._group_selection = []
         for feat, inside in zip(frame_feats, res) :
             if inside :
                 self._group_selection.append(feat)
                 feat.select()
-
-        self.fig.canvas.draw_idle()
-        self.fig.canvas.widgetlock.release(self._curr_lasso)
-        del self._curr_lasso
-        self._curr_lasso = None
-
 
 
     def onpress(self, event) :
@@ -922,7 +941,13 @@ class TM_ControlSys(BaseControlSys) :
             self.fig.canvas.widgetlock(self._curr_lasso)
 
         elif self._mode == 'S' :
-            # Outline mode
+            # Multiselect mode
+
+            # Get rid of any existing multi-select polygon
+            if self._group_polygon is not None :
+                self._group_polygon.remove()
+                self._group_polygon = None
+
             self._curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
                                      self.lasso_selection)
 
@@ -933,9 +958,9 @@ class TM_ControlSys(BaseControlSys) :
             # Selection mode
 
             # Reset any group selections
-            for feat in self._group_selection :
-                feat.deselect()
-            self._group_selection = []
+            #for feat in self._group_selection :
+            #    feat.deselect()
+            #self._group_selection = []
 
             curr_select = None
             for feat in self.state._features[self.rd.frameIndex] :
@@ -1023,16 +1048,34 @@ class TM_ControlSys(BaseControlSys) :
             self.fig.canvas.widgetlock.release(self._curr_lasso)
             del self._curr_lasso
             self._curr_lasso = None
+
+        # Hide any multi-select polygons
+        if self._group_polygon is not None :
+            self._group_polygon.set_visible(False)
+            self.fig.canvas.draw_idle()
+
         print "Selection Mode"
 
     def multi_select_mode(self) :
         # Set mode to multi-select
         self._mode = 'S'
+
+        # Show the group selection polygon if it exists.
+        if self._group_polygon is not None :
+            self._group_polygon.set_visible(True)
+            self.fig.canvas.draw_idle()
+
         print "Multi-Selection Mode"
 
     def outline_mode(self) :
         # set mode to "outline mode"
         self._mode = 'o'
+
+        # Hide any multi-select polygons
+        if self._group_polygon is not None :
+            self._group_polygon.set_visible(False)
+            self.fig.canvas.draw_idle()
+
         print "Outline Mode"
 
     def toggle_assoc_mode(self) :
@@ -1052,10 +1095,6 @@ class TM_ControlSys(BaseControlSys) :
         self._do_save = (not self._do_save)
         print "Do Save:", self._do_save
 
-    #elif event.key == 'V' :
-    #    # Save features to memory NOW!
-    #    print "Converting to track and volume objects, NOW!"
-    #    self.save_features()
 
     def print_menu(self) :
         # Print helpful Menu
@@ -1244,6 +1283,8 @@ class TM_ControlSys(BaseControlSys) :
 
         if lastFrame != self.rd.frameIndex :
             self.update_frame(lastFrame, hold_recluster=True)
+            if self._mode == 'S' :
+                self.select_group()
 
     def step_forward(self) :
         lastFrame = self.rd.frameIndex
@@ -1251,7 +1292,8 @@ class TM_ControlSys(BaseControlSys) :
 
         if lastFrame != self.rd.frameIndex :
             self.update_frame(lastFrame, hold_recluster=True)
-
+            if self._mode == 'S' :
+                self.select_group()
 
 
 def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
