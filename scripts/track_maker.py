@@ -787,6 +787,7 @@ class TM_ControlSys(BaseControlSys) :
 
         self.ax = ax
         self._curr_selection = None
+        self._group_selection = []
         self._alphaScale = 1.0
         self._curr_lasso = None
         self._visible = {}
@@ -823,11 +824,13 @@ class TM_ControlSys(BaseControlSys) :
         self.keymap['r'] = {'func': self.recalculate_ellipses,
                             'help': "Recalculate this frame's features"}
         self.keymap['c'] = {'func': self.clear_frame,
-                            'help': "Remove all features in this frame"}
+                            'help': "Clear/Remove all features in this frame"}
         self.keymap['d'] = {'func': self.delete_feature,
-                            'help': "Delete selected feature"}
+                            'help': "Delete selected feature(s)"}
         self.keymap['s'] = {'func': self.selection_mode,
                             'help': "Selection mode"}
+        self.keymap['S'] = {'func': self.multi_select_mode,
+                            'help': "Multi-Selection Mode"}
         self.keymap['o'] = {'func': self.outline_mode,
                             'help': "Outline mode"}
         self.keymap['a'] = {'func': self.toggle_assoc_mode,
@@ -870,27 +873,69 @@ class TM_ControlSys(BaseControlSys) :
         self._curr_lasso = None
         self.ax.add_artist(newPoly)
 
+    def lasso_selection(self, verts) :
+        """
+        Create a polygon for selecting many features.
+
+        Such a selection can only be used for deletion
+        """
+        frame_feats = self.state._features[self.rd.frameIndex]
+        cents = [feat.center() for feat in frame_feats]
+        res = points_inside_poly(cents, verts)
+
+        # Reset any existing selections
+        if self._curr_selection is not None :
+            self._curr_selection.deselect()
+            self._curr_selection = None
+
+        for feat in self._group_selection :
+            feat.deselect()            
+
+        self._group_selection = []
+        for feat, inside in zip(frame_feats, res) :
+            if inside :
+                self._group_selection.append(feat)
+                feat.select()
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.widgetlock.release(self._curr_lasso)
+        del self._curr_lasso
+        self._curr_lasso = None
+
+
+
     def onpress(self, event) :
         """
         Button-press handler
         """
+        if self.fig.canvas.widgetlock.locked() :
+            return
+        if event.inaxes is not self.ax :
+            return
+
         if self._mode == 'o' :
             # Outline mode
-            if self.fig.canvas.widgetlock.locked() :
-                return
-            if event.inaxes is not self.ax :
-                return
-
             self._curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
                                      self.onlasso)
 
             # Set a lock on drawing the lasso until finished
             self.fig.canvas.widgetlock(self._curr_lasso)
 
+        elif self._mode == 'S' :
+            # Outline mode
+            self._curr_lasso = Lasso(event.inaxes, (event.xdata, event.ydata),
+                                     self.lasso_selection)
+
+            # Set a lock on drawing the lasso until finished
+            self.fig.canvas.widgetlock(self._curr_lasso)
+
         elif self._mode == 's':
             # Selection mode
-            if event.inaxes is not self.ax :
-                return
+
+            # Reset any group selections
+            for feat in self._group_selection :
+                feat.deselect()
+            self._group_selection = []
 
             curr_select = None
             for feat in self.state._features[self.rd.frameIndex] :
@@ -942,6 +987,13 @@ class TM_ControlSys(BaseControlSys) :
             self._curr_selection.deselect()
             self._curr_selection = None
 
+        for index in reversed(range(len(self._group_selection))) :
+            feat = self._group_selection[index]
+            if feat.frame == self.rd.frameIndex :
+                feat.deselect()
+                self._group_selection.pop(index)
+            
+
         self.state.clear_frame(self.rd.frameIndex)
         #self.update_frame()
 
@@ -954,6 +1006,14 @@ class TM_ControlSys(BaseControlSys) :
             self.state.remove_feature(self._curr_selection)
             self._curr_selection = None
 
+        for index in reversed(range(len(self._group_selection))) :
+            feat = self._group_selection[index]
+            if feat.frame == self.rd.frameIndex :
+                feat.deselect()
+                feat.remove()
+                self.state.remove_feature(feat)
+                self._group_selection.pop(index)
+
     def selection_mode(self) :
         # set mode to "selection mode"
         self._mode = 's'
@@ -964,6 +1024,11 @@ class TM_ControlSys(BaseControlSys) :
             del self._curr_lasso
             self._curr_lasso = None
         print "Selection Mode"
+
+    def multi_select_mode(self) :
+        # Set mode to multi-select
+        self._mode = 'S'
+        print "Multi-Selection Mode"
 
     def outline_mode(self) :
         # set mode to "outline mode"
