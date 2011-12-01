@@ -120,6 +120,12 @@ class Track(object) :
     def __len__(self) :
         return len(self.frames)
 
+    def select(self) :
+        self.obj.set_color('w')
+
+    def deselect(self) :
+        self.obj.set_color('b')
+
     def get_data(self) :
         return zip(*self.obj.get_data())
 
@@ -396,15 +402,24 @@ class StateManager(object) :
 
         # Use the self._volTimes array, if available and if the frame numbers
         # for the features make sense.
-        if (self._volTimes is not None and
-            len(self._volTimes) >= max(self._features.keys()) and
-            len(self._volTimes) > 0) :
-            # times in minutes
-            volTimes = [(aTime - self._volTimes[0]).total_seconds()/60.0 for
-                        aTime in self._volTimes]
+        if self._volTimes is not None and len(self._volTimes) > 0 :
+            if (len(self._features) == 0 or
+                len(self._volTimes) >= max(self._features.keys())) :
+                # times in minutes
+                # We have more volTime entries than features entries, so use
+                # volTime relative to the initial volume time
+                volTimes = [(aTime - self._volTimes[0]).total_seconds()/60.0 for
+                            aTime in self._volTimes]
+            else :
+                # We have more feature entries than voltimes, use the features
+                volTimes = np.arange(max(self.features.keys()))
         else :
-            # Just assume volume times of increments of one.
-            volTimes = np.arange(max(self._features.keys()))
+            if len(self._features) > 0 :
+                # Just assume volume times of increments of one.
+                volTimes = np.arange(max(self._features.keys()))
+            else :
+                # We know nothing!
+                volTimes = np.array([])
 
         gridx_grads = np.gradient(xs)
         gridy_grads = np.gradient(ys)
@@ -437,7 +452,7 @@ class StateManager(object) :
                                                                gridy_grads)
 
 
-                if feat.track is None :
+                if feat.track is None or len(feat.track) < 2 :
                     pos = feat.center()
                     tmp = np.array([(pos[0], pos[1], featIndex + index,
                                      np.nan, np.nan, frameNum, 'F')],
@@ -465,7 +480,8 @@ class StateManager(object) :
                                                        track.features,
                                                        track.frames)],
                            dtype=TrackUtils.base_track_dtype)
-            tracks.append(tmp)
+            if len(tmp) > 1 :
+                tracks.append(tmp)
 
         return tracks, falarms, volume, polygons
 
@@ -734,10 +750,16 @@ class Feature(object) :
             if item is not None :
                 item.set_edgecolor('w')
 
+        if self.track is not None :
+            self.track.select()
+
     def deselect(self) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_edgecolor(Feature.orig_colors.get(key, 'k'))
+
+        if self.track is not None :
+            self.track.deselect()
 
     def get_visible(self) :
         """
@@ -1368,6 +1390,7 @@ def main(args) :
 
     if os.path.exists(origTrackFile) :
         tracks, falarms = TrackFileUtils.ReadTracks(origTrackFile)
+        TrackUtils.CleanupTracks(tracks, falarms)
         
 
     volume = dict(frameCnt=0,
@@ -1412,6 +1435,9 @@ def main(args) :
                   polygonfile, polygons)
 
 def SortVolume(volumes) :
+    if len(volumes) == 0 :
+        return volumes
+
     frames = [aVol['frameNum'] for aVol in volumes]
     args = np.argsort(frames)
     new_volumes = [None] * (max(frames) - min(frames) + 1)
