@@ -120,6 +120,10 @@ class Track(object) :
     def __len__(self) :
         return len(self.frames)
 
+    def __str__(self) :
+        X, Y = self.obj.get_data()
+        return "Frames: %s\nX: %s\nY: %s" % (self.frames, X, Y)
+
     def select(self) :
         self.obj.set_color('w')
 
@@ -440,7 +444,18 @@ class StateManager(object) :
         featIndex = 0
         # cornerIDs keyed by feature objects
         allKnownFeatures = {}
-        for frameNum, features in self._features.iteritems() :
+        print "Saving Features..."
+        progress_marks = np.unique(np.linspace(0, len(self._features),
+                                               10).astype('i'))[::-1].tolist()
+        # NOTE: The frame indices here do not correspond to indices that
+        #       they are saved as.  This is merely a progress indicator.
+        print "Frame (of %d): " % (len(self._features) - 1),
+        for frameIdx, (frameNum, features) in enumerate(
+                                            self._features.iteritems()) :
+            if frameIdx > progress_marks[-1] :
+                progress_marks.pop()
+                print frameIdx,
+
             # Any features that do not have a track are False Alarms
             for index, feat in enumerate(features) :
                 allKnownFeatures[feat] = featIndex + index
@@ -648,6 +663,14 @@ class Feature(object) :
 
         self.feat_area = area if (area is not None and
                                   not np.isnan(area)) else None
+
+    def __str__(self) :
+        """
+        Return a string containing status info of this feature object.
+        """
+        X, Y = self.center()
+        return "Frame: %d\nPos: %f, %f\nTrack: %s\nArea: %f" %\
+                     (self.frame, X, Y, (self.track is not None), self.area())
 
     def mark_associated(self, assoc=True) :
         if 'center' in self.objects :
@@ -865,6 +888,8 @@ class TM_ControlSys(BaseControlSys) :
                             'help': "To save, or not save?"}
         self.keymap['h'] = {'func': self.print_menu,
                             'help': "Display this helpful menu"}
+        self.keymap['p'] = {'func': self.print_selection,
+                            'help': "Display info on the current selection"}
 
 
         self._clean_mplkeymap()
@@ -1146,6 +1171,17 @@ class TM_ControlSys(BaseControlSys) :
                    TM_ControlSys._assoc_mode_list[self._assoc_mode],
                    self._do_save, self._show_features))
 
+    def print_selection(self) :
+        """
+        Print information on the current selected feature.
+
+        Also display info on the associated track, if any.
+        
+        """
+        if self._curr_selection is not None :
+            print "Feature --\n", self._curr_selection
+            if self._curr_selection.track is not None :
+                print "\nTrack --\n", self._curr_selection.track
 
     def _clear_frame(self, frame=None) :
         if frame is None :
@@ -1390,8 +1426,27 @@ def main(args) :
 
     if os.path.exists(origTrackFile) :
         tracks, falarms = TrackFileUtils.ReadTracks(origTrackFile)
+        TrackUtils.FilterMHTTracks(tracks, falarms)
+
+        # Fix for a stupidity I had a while back by not using FilterMHTTracks()
+        # Essentially, skipped features were included in tracks when I decided
+        # to assist my efforts with using MHT as a first-guess program.
+        # What's worse is that these features are listed with frame number -9.
+        # This screws up algorithms that assume that the features for a track
+        # are listed in chronological order.
+        #
+        # This might have also messed up some other things as well, but
+        # this should be all that is needed. Note that I do not explicitly
+        # remove the features at from frame -9, in case it is a valid frame
+        for ind, track in enumerate(tracks) :
+            valid = ~(np.isnan(track['xLocs']) | np.isnan(track['yLocs']))
+            tracks[ind] = track[valid]
+
+        for ind, falarm in enumerate(falarms) :
+            valid = ~(np.isnan(falarm['xLocs']) | np.isnan(falarm['yLocs']))
+            falarms[ind] = falarm[valid]
+
         TrackUtils.CleanupTracks(tracks, falarms)
-        
 
     volume = dict(frameCnt=0,
                   corner_filestem=sceneParams['corner_file'],
