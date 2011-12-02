@@ -162,12 +162,14 @@ class Track(object) :
         xs.insert(index, x)
         ys.insert(index, y)
         self.obj.set_zorder(max(self.frames) + 1)
-
-        # Change face color to indicate that it is associated with a track
-        feature.mark_associated(True)
         self.obj.set_data(xs, ys)
 
         self._bookkeeping(feature)
+        # Change face color to indicate that it is associated with a track
+        # Always do this *after* doing any bookkeeping because bookkeeping
+        # could perform a removal from another track and inadvertantly
+        # mark it as unassociated.
+        feature.mark_associated(True)
 
     def join(self, track) :
         """
@@ -775,21 +777,31 @@ class Feature(object) :
                 discard = self.objects.pop(key)
                 discard.remove()
 
-    def select(self) :
+    def select(self, recurse_selection=False) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_edgecolor('w')
 
         if self.track is not None :
             self.track.select()
+            if recurse_selection :
+                for feat in self.track.features :
+                    # Need to set recurse_selection to False
+                    # to prevent infinite recursion
+                    feat.select(False)
 
-    def deselect(self) :
+    def deselect(self, recurse_selection=False) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_edgecolor(Feature.orig_colors.get(key, 'k'))
 
         if self.track is not None :
             self.track.deselect()
+            if recurse_selection :
+                for feat in self.track.features :
+                    # Need to pass recurse_selection=False
+                    # to prevent inf recursion
+                    feat.deselect(False)
 
     def get_visible(self) :
         """
@@ -843,7 +855,10 @@ class TM_ControlSys(BaseControlSys) :
         self._group_polygon = None
         self._alphaScale = 1.0
         self._curr_lasso = None
+        self._full_track_hilite = False
+        # Visibility state for each frame
         self._visible = {}
+
         self.state = state
 
         for frame, feats in self.state._features.iteritems() :
@@ -867,6 +882,7 @@ class TM_ControlSys(BaseControlSys) :
         # Start in 'steal' association mode
         self._assoc_mode = 0
 
+        # Connect the mouse-button event to the canvas
         fig.canvas.mpl_connect('button_press_event', self.onpress)
 
         # TODO: Add to keymap
@@ -897,6 +913,9 @@ class TM_ControlSys(BaseControlSys) :
                             'help': "Display this helpful menu"}
         self.keymap['p'] = {'func': self.print_selection,
                             'help': "Display info on the current selection"}
+        self.keymap['P'] = {'func': self.toggle_hilite_track,
+                            'help': "Toggle highlighting all features for"\
+                                    " the current selected track"}
 
 
         self._clean_mplkeymap()
@@ -1040,13 +1059,13 @@ class TM_ControlSys(BaseControlSys) :
                         if tmp is not None :
                             self.ax.add_artist(tmp.obj)
 
-                    prev_select.deselect()
+                    prev_select.deselect(self._full_track_hilite)
 
                 if prev_select is curr_select :
                     self._curr_selection = None
                 else :
                     self._curr_selection = curr_select
-                    curr_select.select()
+                    curr_select.select(self._full_track_hilite)
 
                 self.fig.canvas.draw_idle()
 
@@ -1066,7 +1085,7 @@ class TM_ControlSys(BaseControlSys) :
         # Completely remove the features for this frame
         if (self._curr_selection is not None and
             self._curr_selection.frame == self.rd.frameIndex) :
-            self._curr_selection.deselect()
+            self._curr_selection.deselect(self._full_track_hilite)
             self._curr_selection = None
 
         for index in reversed(range(len(self._group_selection))) :
@@ -1083,7 +1102,7 @@ class TM_ControlSys(BaseControlSys) :
         # Delete the currently selected artist (if in the current frame)
         if (self._curr_selection is not None and
             self._curr_selection.frame == self.rd.frameIndex) :
-            self._curr_selection.deselect()
+            self._curr_selection.deselect(self._full_track_hilite)
             self._curr_selection.remove()
             self.state.remove_feature(self._curr_selection)
             self._curr_selection = None
@@ -1091,7 +1110,7 @@ class TM_ControlSys(BaseControlSys) :
         for index in reversed(range(len(self._group_selection))) :
             feat = self._group_selection[index]
             if feat.frame == self.rd.frameIndex :
-                feat.deselect()
+                feat.deselect(self._full_track_hilite)
                 feat.remove()
                 self.state.remove_feature(feat)
                 self._group_selection.pop(index)
@@ -1173,10 +1192,12 @@ class TM_ControlSys(BaseControlSys) :
                 Association Method: %s
                 Do save upon figure close: %s
                 Show all features: %s
+                Full Track Highlighting: %s
             """ % (self.rd.frameIndex + 1,
                    len(self.rd.radarData), self._mode,
                    TM_ControlSys._assoc_mode_list[self._assoc_mode],
-                   self._do_save, self._show_features))
+                   self._do_save, self._show_features,
+                   self._full_track_hilite))
 
     def print_selection(self) :
         """
@@ -1189,6 +1210,30 @@ class TM_ControlSys(BaseControlSys) :
             print "Feature --\n", self._curr_selection
             if self._curr_selection.track is not None :
                 print "\nTrack --\n", self._curr_selection.track
+
+    def toggle_hilite_track(self) :
+        self._full_track_hilite = (not self._full_track_hilite)
+
+        if (self._curr_selection is not None and
+            self._curr_selection.track is not None) :
+            # Go through all of the track's features (except for the
+            # currently selected feature) and set the proper highlight setting
+            for feat in self._curr_selection.track.features :
+                if feat is not self._curr_selection :
+                    if self._full_track_hilite :
+                        feat.select(False)
+                    else :
+                        feat.deselect(False)
+
+            # This process can inadvertantly deselect the track itself,
+            # during the toggle process. So, just make sure that it is
+            # hilighted after toggling everything else.
+            if not self._full_track_hilite :
+                self._curr_selection.track.select()
+
+
+        print "Full Track-highlighting:", self._full_track_hilite
+        self.fig.canvas.draw_idle()
 
     def _clear_frame(self, frame=None) :
         if frame is None :
