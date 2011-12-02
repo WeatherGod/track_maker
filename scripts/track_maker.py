@@ -314,6 +314,8 @@ class StateManager(object) :
         #    self.volume['volume_data'].extend(newFrames)
         #    self.volume['frame_cnt'] = len(self.radarData)
 
+        _corruption_cleanup(tracks, falarms)
+
         # Features keyed by cornerID
         allKnownFeats = {}
         for frameID, vol in enumerate(volume['volume_data']) :
@@ -321,6 +323,11 @@ class StateManager(object) :
             frameNum = vol['frameNum']
             
             for cellIndex in xrange(len(cells)) :
+                if (np.isnan(cells['xLocs'][cellIndex]) or
+                    np.isnan(cells['yLocs'][cellIndex])) :
+                    # Bad data... throw it out!
+                    continue
+
                 newPoint = StateManager._new_point(cells['xLocs'][cellIndex],
                                                    cells['yLocs'][cellIndex])
                 cornerID = cells['cornerIDs'][cellIndex]
@@ -1395,6 +1402,31 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
 
     return radarData, state, rd, cs
 
+def _corruption_cleanup(tracks, falarms) :
+    """
+    Fix for a stupidity I had a while back by not using FilterMHTTracks()
+    Essentially, skipped features were included in tracks when I decided
+    to assist my efforts with using MHT as a first-guess program.
+    What's worse is that these features are listed with frame number -9.
+    This screws up algorithms that assume that the features for a track
+    are listed in chronological order.
+
+    This might have also messed up some other things as well, but
+    this should be all that is needed. Note that I do not explicitly
+    remove the features at from frame -9, in case it is a valid frame
+    """
+    for ind, track in enumerate(tracks) :
+        valid = ~(np.isnan(track['xLocs']) | np.isnan(track['yLocs']))
+        tracks[ind] = track[valid]
+
+    for ind, falarm in enumerate(falarms) :
+        valid = ~(np.isnan(falarm['xLocs']) | np.isnan(falarm['yLocs']))
+        falarms[ind] = falarm[valid]
+
+    TrackUtils.CleanupTracks(tracks, falarms)
+
+
+
 def main(args) :
     dirName = os.path.join(args.path, args.scenario)
 
@@ -1427,26 +1459,6 @@ def main(args) :
     if os.path.exists(origTrackFile) :
         tracks, falarms = TrackFileUtils.ReadTracks(origTrackFile)
         TrackUtils.FilterMHTTracks(tracks, falarms)
-
-        # Fix for a stupidity I had a while back by not using FilterMHTTracks()
-        # Essentially, skipped features were included in tracks when I decided
-        # to assist my efforts with using MHT as a first-guess program.
-        # What's worse is that these features are listed with frame number -9.
-        # This screws up algorithms that assume that the features for a track
-        # are listed in chronological order.
-        #
-        # This might have also messed up some other things as well, but
-        # this should be all that is needed. Note that I do not explicitly
-        # remove the features at from frame -9, in case it is a valid frame
-        for ind, track in enumerate(tracks) :
-            valid = ~(np.isnan(track['xLocs']) | np.isnan(track['yLocs']))
-            tracks[ind] = track[valid]
-
-        for ind, falarm in enumerate(falarms) :
-            valid = ~(np.isnan(falarm['xLocs']) | np.isnan(falarm['yLocs']))
-            falarms[ind] = falarm[valid]
-
-        TrackUtils.CleanupTracks(tracks, falarms)
 
     volume = dict(frameCnt=0,
                   corner_filestem=sceneParams['corner_file'],
@@ -1490,15 +1502,41 @@ def main(args) :
                   polygonfile, polygons)
 
 def SortVolume(volumes) :
+    """
+    Not only does this sorts the volumes into chronological order,
+    it will create stub volume entries for any missing frames between
+    the data's start and end times.
+    """
     if len(volumes) == 0 :
         return volumes
 
-    frames = [aVol['frameNum'] for aVol in volumes]
+    frames = np.array([aVol['frameNum'] for aVol in volumes])
+    volTimes = np.array([aVol['volTime'] for aVol in volumes])
     args = np.argsort(frames)
-    new_volumes = [None] * (max(frames) - min(frames) + 1)
-    for index, arg in enumerate(args) :
-        # TODO: Fill in missing frames
-        new_volumes[index] = volumes[arg]
+    frames = frames[args]
+    volTimes = volTimes[args]
+
+    all_frames = np.arange(int(frames.min()),
+                           int(frames.max()) + 1).astype('i')
+    all_times = np.interp(all_frames, frames, volTimes)
+
+    new_volumes = [None] * len(all_frames)
+    frame_missing = ~np.in1d(all_frames, frames)
+    non_missing = np.cumsum(~frame_missing)
+
+    for index, (frameNum, volTime,
+                is_missing, arg_idx) in enumerate(zip(all_frames, all_times,
+                                                  frame_missing, non_missing)) :
+        if is_missing :
+            # No volume data available... fill in a stub entry
+            new_volumes[index] = {'volTime' : volTime,
+                                  'frameNum': frameNum,
+                                  'stormCells' :
+                                    np.array([], dtype=TrackUtils.corner_dtype)}
+        else :
+            # Remember, the volumes list is not guaranteed to be in
+            # chronological order, hence the main purpose of this algorithm
+            new_volumes[index] = volumes[args[arg_idx - 1]]
 
     return new_volumes
 
