@@ -916,6 +916,9 @@ class TM_ControlSys(BaseControlSys) :
         self.keymap['P'] = {'func': self.toggle_hilite_track,
                             'help': "Toggle highlighting all features for"\
                                     " the current selected track"}
+        self.keymap['H'] = {'func': self.temp_hide_selection,
+                            'help': "Hold 'H' to temporarially hide the"\
+                                    " the current selection"}
 
 
         self._clean_mplkeymap()
@@ -1234,6 +1237,32 @@ class TM_ControlSys(BaseControlSys) :
 
         print "Full Track-highlighting:", self._full_track_hilite
         self.fig.canvas.draw_idle()
+
+    def temp_hide_selection(self) :
+        if not hasattr(self, '_temp_hide_cid') :
+            cid = self.fig.canvas.mpl_connect('key_release_event',
+                                              self.temp_unhide_selection)
+            self._temp_hide_cid = cid
+            self.hide_selection()
+
+    def temp_unhide_selection(self, event) :
+        if event.key == 'H' :
+            if hasattr(self, '_temp_hide_cid') :
+                self.fig.canvas.mpl_disconnect(self._temp_hide_cid)
+                self.unhide_selection()
+                del self._temp_hide_cid
+                self.fig.canvas.draw_idle()
+            else :
+                raise Exception("temp_unhide_selection() called without"
+                                " setting self._temp_hide_cid!")
+
+    def hide_selection(self) :
+        if self._curr_selection is not None :
+            self._curr_selection.set_visible(False)
+
+    def unhide_selection(self) :
+        if self._curr_selection is not None :
+            self._curr_selection.set_visible(True)
 
     def _clear_frame(self, frame=None) :
         if frame is None :
