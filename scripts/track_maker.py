@@ -25,6 +25,7 @@ from textwrap import dedent
 from bisect import bisect_left
 from collections import defaultdict
 from cPickle import load, dump
+import sys
 
 def ConsistentDomain(radarFiles) :
     minLat = None
@@ -384,7 +385,7 @@ class StateManager(object) :
                 self._features[falarm['frameNums'][0]].append(newFeat)
 
 
-    def save_features(self, xs, ys) :
+    def save_features(self, xs, ys, quicksave=False) :
         """
         Update the track and volume data.
         """
@@ -459,17 +460,20 @@ class StateManager(object) :
         # NOTE: The frame indices here do not correspond to indices that
         #       they are saved as.  This is merely a progress indicator.
         print "Frame (of %d): " % (len(self._features) - 1),
+        sys.stdout.flush()
         for frameIdx, (frameNum, features) in enumerate(
                                             self._features.iteritems()) :
             if frameIdx > progress_marks[-1] :
                 progress_marks.pop()
                 print frameIdx,
+                sys.stdout.flush()
 
             # Any features that do not have a track are False Alarms
             for index, feat in enumerate(features) :
                 allKnownFeatures[feat] = featIndex + index
 
-                if np.isnan(feat.area()) and ('contour' in feat.objects) :
+                if (not quicksave and np.isnan(feat.area()) and
+                    ('contour' in feat.objects)) :
                     feat.feat_area = Feature.calc_area_polygon(xs, ys,
                                                                feat.get_xy(),
                                                                gridx_grads,
@@ -875,6 +879,7 @@ class TM_ControlSys(BaseControlSys) :
 
         self._show_features = False
         self._do_save = True
+        self._do_quicksave = False
 
         # Start in outline mode
         self._mode = 'o'
@@ -909,6 +914,10 @@ class TM_ControlSys(BaseControlSys) :
                             'help': "Toggle displaying all features"}
         self.keymap['v'] = {'func': self.toggle_save,
                             'help': "To save, or not save?"}
+        self.keymap['V'] = {'func': self.toggle_quicksave,
+                            'help': "If saving, toggle saving quickly by"
+                                    " avoiding the area calculation of each"
+                                    " feature."}
         self.keymap['h'] = {'func': self.print_menu,
                             'help': "Display this helpful menu"}
         self.keymap['p'] = {'func': self.print_selection,
@@ -933,6 +942,9 @@ class TM_ControlSys(BaseControlSys) :
 
     def do_save_results(self) :
         return self._do_save
+
+    def do_quicksave(self) :
+        return self._do_quicksave
 
     def onlasso(self, verts) :
         """
@@ -1170,9 +1182,15 @@ class TM_ControlSys(BaseControlSys) :
         self.update_frame(hold_recluster=True)
 
     def toggle_save(self) :
-        # Toogle save
+        # Toggle save
         self._do_save = (not self._do_save)
         print "Do Save:", self._do_save
+
+    def toggle_quicksave(self) :
+        """Toggle whether or not to do a "quick save" which avoids
+        calculating the area of each newly created feature"""
+        self._do_quicksave = (not self._do_quicksave)
+        print "Do Quicksave (if saving at all):", self._do_quicksave
 
 
     def print_menu(self) :
@@ -1193,13 +1211,13 @@ class TM_ControlSys(BaseControlSys) :
                 Current Frame: %d of %d
                 Current Mode: %s
                 Association Method: %s
-                Do save upon figure close: %s
+                Do save upon figure close: %s  Quickly? %s
                 Show all features: %s
                 Full Track Highlighting: %s
             """ % (self.rd.frameIndex + 1,
                    len(self.rd.radarData), self._mode,
                    TM_ControlSys._assoc_mode_list[self._assoc_mode],
-                   self._do_save, self._show_features,
+                   self._do_save, self._do_quicksave, self._show_features,
                    self._full_track_hilite))
 
     def print_selection(self) :
@@ -1567,7 +1585,8 @@ def main(args) :
         if not os.path.exists(dirName) :
             makedirs(dirName)
 
-        tracks, falarms, volume, polygons = state.save_features(rd.xs, rd.ys)
+        tracks, falarms, volume, polygons = state.save_features(rd.xs, rd.ys,
+                                                            cs.do_quicksave())
         volume['corner_filestem'] = sceneParams['corner_file']
 
         # Final save
