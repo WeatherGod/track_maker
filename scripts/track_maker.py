@@ -13,7 +13,7 @@ import ZigZag.ParamUtils as ParamUtils
 
 from BRadar.io import RadarCache, LoadRastRadar
 from BRadar.plotutils import RadarDisplay, BaseControlSys
-from BRadar.maputils import LonLat2Cart
+from BRadar.maputils import LonLat2Cart, Cart2LonLat
 import BRadar.radarsites as radarsites
 
 import numpy as np
@@ -284,7 +284,8 @@ class StateManager(object) :
         self._features = defaultdict(list)
         self._volTimes = volTimes
 
-    def load_features(self, tracks, falarms, volume, polygons) :
+    def load_features(self, tracks, falarms, volume, polygons,
+                            ref_coords=None) :
         #frameDiff = len(self.radarData) - len(self.volume['volume_data'])
         #if len(self.volume['volume_data']) > 0 :
         #    startIndex = self.volume['volume_data'][0]['frameNum']
@@ -317,7 +318,7 @@ class StateManager(object) :
         #    self.volume['volume_data'].extend(newFrames)
         #    self.volume['frame_cnt'] = len(self.radarData)
 
-        _corruption_cleanup(tracks, falarms)
+        _corruption_cleanup(tracks, falarms, volume, polygons, ref_coords)
 
         # Features keyed by cornerID
         allKnownFeats = {}
@@ -1462,8 +1463,7 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
     minLat, minLon, maxLat, maxLon, volTimes = ConsistentDomain(radarFiles)
 
     radarData = RadarCache(radarFiles, 4)
-    state = StateManager(volTimes)
-    state.load_features(tracks, falarms, volume, polygons)
+
 
     data = radarData.curr()
     radarName = data['station']
@@ -1473,13 +1473,22 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
 
     lons, lats = np.meshgrid(data['lons'], data['lats'])
 
-    cent_lon, cent_lat = (((minLon + maxLon) / 2.0,
-                           (minLat + maxLat) / 2.0)
-                         if useOldTransform else
-                          (radarSite['LON'], radarSite['LAT']))
+    cent_lon, cent_lat = (radarSite['LON'], radarSite['LAT'])
 
     xs, ys = LonLat2Cart(cent_lon, cent_lat,
                          lons, lats)
+
+    if useOldTransform :
+        # Perform correction on the data
+        ref_coords = dict(good=(cent_lon, cent_lat),
+                          bad=((minLon + maxLon) / 2.0,
+                               (minLat + maxLat) / 2.0))
+    else :
+        ref_coords = None
+
+    state = StateManager(volTimes)
+    state.load_features(tracks, falarms, volume, polygons,
+                        ref_coords=ref_coords)
 
     fig = plt.figure()
     ax = fig.gca()
@@ -1494,7 +1503,7 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
 
     return radarData, state, rd, cs
 
-def _corruption_cleanup(tracks, falarms) :
+def _corruption_cleanup(tracks, falarms, volume, polys, ref_coords=None) :
     """
     Fix for a stupidity I had a while back by not using FilterMHTTracks()
     Essentially, skipped features were included in tracks when I decided
@@ -1506,6 +1515,12 @@ def _corruption_cleanup(tracks, falarms) :
     This might have also messed up some other things as well, but
     this should be all that is needed. Note that I do not explicitly
     remove the features at from frame -9, in case it is a valid frame
+
+`   Also, when the reference point for plotting in this software changed
+    from the average domain coordinate to a station coordinate, any existing
+    session has incorrect cartesian locations.  The user can use --old_coords,
+    and that will then get this program to correct the coordinates in all the
+    data.
     """
     for ind, track in enumerate(tracks) :
         valid = ~(np.isnan(track['xLocs']) | np.isnan(track['yLocs']))
@@ -1517,6 +1532,35 @@ def _corruption_cleanup(tracks, falarms) :
 
     TrackUtils.CleanupTracks(tracks, falarms)
 
+    if ref_coords is not None :
+        bad_lon, bad_lat = ref_coords['bad']
+        good_lon, good_lat = ref_coords['good']
+        for track in (tracks + falarms) :
+            lons, lats = Cart2LonLat(bad_lon, bad_lat,
+                                     track['xLocs'], track['yLocs'])
+            xs, ys = LonLat2Cart(good_lon, good_lat,
+                                 lons, lats)
+            track['xLocs'][:] = xs
+            track['yLocs'][:] = ys
+
+        for aVol in volume['volume_data'] :
+            strmCells = aVol['stormCells']
+            lons, lats = Cart2LonLat(bad_lon, bad_lat,
+                                     strmCells['xLocs'], strmCells['yLocs'])
+            xs, ys = LonLat2Cart(good_lon, good_lat,
+                                 lons, lats)
+
+            strmCells['xLocs'][:] = xs
+            strmCells['yLocs'][:] = ys
+
+        for idx, poly in polys.iteritems() :
+            lons, lats = Cart2LonLat(bad_lon, bad_lat,
+                                     poly[:, 0], poly[:, 1])
+            xs, ys = LonLat2Cart(good_lon, good_lat,
+                                 lons, lats)
+
+            poly[:, 0] = xs
+            poly[:, 1] = ys
 
 
 def main(args) :
