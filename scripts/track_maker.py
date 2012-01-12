@@ -488,7 +488,6 @@ class StateManager(object) :
                                    dtype=TrackUtils.base_track_dtype)
                     falarms.append(tmp)
 
-            # TODO: get volume times working
             vol = {'volTime' : volTimes[frameNum],
                    'frameNum' : frameNum,
                    'stormCells' : np.array([(feat.center()[0], feat.center()[1],
@@ -1682,6 +1681,7 @@ def SaveState(paramFile, params, volumeFile, volume,
               polygonfile, polygons) :
     # Do I need to update the Params?
     volume['volume_data'] = SortVolume(volume['volume_data'])
+    params['times'] = [aVol['volTime'] for aVol in volume['volume_data']]
     TrackFileUtils.SaveCorners(volumeFile, volume['corner_filestem'],
                                volume['volume_data'],
                                path=os.path.dirname(volumeFile))
