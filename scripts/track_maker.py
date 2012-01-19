@@ -1209,13 +1209,18 @@ class TM_ControlSys(BaseControlSys) :
             Current Values
             --------------
                 Current Frame: %d of %d
+                X-Limits: %8.3f  %8.3f
+                Y-Limits: %8.3f  %8.3f
+
                 Current Mode: %s
                 Association Method: %s
                 Do save upon figure close: %s  Quickly? %s
                 Show all features: %s
                 Full Track Highlighting: %s
-            """ % (self.rd.frameIndex + 1,
-                   len(self.rd.radarData), self._mode,
+            """ % (self.rd.frameIndex + 1, len(self.rd.radarData),
+                   self.ax.get_xlim()[0], self.ax.get_xlim()[1],
+                   self.ax.get_ylim()[0], self.ax.get_ylim()[1],
+                   self._mode,
                    TM_ControlSys._assoc_mode_list[self._assoc_mode],
                    self._do_save, self._do_quicksave, self._show_features,
                    self._full_track_hilite))
