@@ -850,11 +850,13 @@ class Feature(object) :
 
 class TM_ControlSys(BaseControlSys) :
     _assoc_mode_list = ['steal', 'join', 'remove', 'breakup']
-    def __init__(self, fig, ax, rd, state) :
+    def __init__(self, fig, ax, rd, state, lon, lat) :
         BaseControlSys.__init__(self, fig, rd)
 
         self.ax = ax
         self._curr_selection = None
+        self._ref_lon = lon
+        self._ref_lat = lat
         self._group_selection = []
         self._group_polygon = None
         self._alphaScale = 1.0
@@ -1205,12 +1207,20 @@ class TM_ControlSys(BaseControlSys) :
         for key, act in self.keymap.iteritems() :
             print "%11s %s" % (key, act['help'])
 
+        xlims = self.ax.get_xlim()
+        ylims = self.ax.get_ylim()
+        lonlims, latlims = Cart2LonLat(self._ref_lon, self._ref_lat,
+                                       xlims, ylims)
+
         print dedent("""
             Current Values
             --------------
                 Current Frame: %d of %d
+                Radar File: %s
                 X-Limits: %8.3f  %8.3f
                 Y-Limits: %8.3f  %8.3f
+                Lon-Limits: %8.3f  %8.3f
+                Lat-Limits: %8.3f  %8.3f
 
                 Current Mode: %s
                 Association Method: %s
@@ -1218,8 +1228,11 @@ class TM_ControlSys(BaseControlSys) :
                 Show all features: %s
                 Full Track Highlighting: %s
             """ % (self.rd.frameIndex + 1, len(self.rd.radarData),
-                   self.ax.get_xlim()[0], self.ax.get_xlim()[1],
-                   self.ax.get_ylim()[0], self.ax.get_ylim()[1],
+                   self.rd.radarData.name,
+                   xlims[0], xlims[1],
+                   ylims[0], ylims[1],
+                   lonlims[0], lonlims[1],
+                   latlims[0], latlims[1],
                    self._mode,
                    TM_ControlSys._assoc_mode_list[self._assoc_mode],
                    self._do_save, self._do_quicksave, self._show_features,
@@ -1503,7 +1516,7 @@ def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
     ax.set_ylabel('Y (km)')
     ax.set_aspect('equal')
 
-    cs = TM_ControlSys(fig, ax, rd, state)
+    cs = TM_ControlSys(fig, ax, rd, state, cent_lon, cent_lat)
 
     return radarData, state, rd, cs
 
