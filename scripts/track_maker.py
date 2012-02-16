@@ -653,7 +653,12 @@ class StateManager(object) :
                     self._cleanup()
                 else :
                     # Breakup mode
-                    newTrack = feat1.track.breakup(feat2)
+                    # Provide the later of the two features because
+                    # track.breakup makes a new track from feat on later.
+                    if feat1.frame < feat2.frame :
+                        newTrack = feat1.track.breakup(feat2)
+                    else :
+                        newTrack = feat2.track.breakup(feat1)
                     self._tracks.append(newTrack)
 
         return newTrack
