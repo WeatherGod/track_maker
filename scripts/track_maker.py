@@ -104,10 +104,10 @@ def FitEllipses(reslabels, labels, xgrid, ygrid) :
 
     return ellips
 
-class Track(object) :
+class Track(Line2D) :
     def __init__(self, x, y, frames, features=None) :
-        self.obj = Line2D(x, y, color='b', lw=2, marker='.', ms=5,
-                          zorder=(max(frames) + 1), alpha=0.7)
+        Line2D.__init__(self, x, y, color='b', lw=2, marker='.', ms=5,
+                        zorder=(max(frames) + 1), alpha=0.7, picker=5)
         self.frames = list(frames)
         self.features = features
 
@@ -122,17 +122,38 @@ class Track(object) :
         return len(self.frames)
 
     def __str__(self) :
-        X, Y = self.obj.get_data()
+        X, Y = Line2D.get_data(self)
         return "Frames: %s\nX: %s\nY: %s" % (self.frames, X, Y)
 
-    def select(self) :
-        self.obj.set_color('w')
+    @property
+    def selected(self) :
+        return self.get_color() == 'w'
 
-    def deselect(self) :
-        self.obj.set_color('b')
+    @selected.setter
+    def selected(self, mode) :
+        if mode :
+            self.select()
+        else :
+            self.deselect()
+
+    def select(self, alsofeatures=False) :
+        self.set_color('w')
+
+        if alsofeatures :
+            for feat in self.features :
+                # Prevent infinite recursion
+                feat.select(alsotrack=False, recurse_selection=False)
+
+    def deselect(self, alsofeatures=False) :
+        self.set_color('b')
+
+        if alsofeatures :
+            for feat in self.features :
+                # Prevent infinite recursion
+                feat.deselect(alsotrack=False, recurse_selection=False)
 
     def get_data(self) :
-        return zip(*self.obj.get_data())
+        return zip(*Line2D.get_data(self))
 
     def _bookkeeping(self, feat) :
         if feat.track is not None and feat.track is not self :
@@ -153,7 +174,7 @@ class Track(object) :
         frameNum = feature.frame
         index = bisect_left(self.frames, frameNum)
 
-        xs, ys = self.obj.get_data()
+        xs, ys = Line2D.get_data(self)
         xs = list(xs)
         ys = list(ys)
 
@@ -162,8 +183,8 @@ class Track(object) :
         self.features.insert(index, feature)
         xs.insert(index, x)
         ys.insert(index, y)
-        self.obj.set_zorder(max(self.frames) + 1)
-        self.obj.set_data(xs, ys)
+        self.set_zorder(max(self.frames) + 1)
+        self.set_data(xs, ys)
 
         self._bookkeeping(feature)
         # Change face color to indicate that it is associated with a track
@@ -188,12 +209,12 @@ class Track(object) :
             return
 
 
-        xs, ys = self.obj.get_data()
+        xs, ys = Line2D.get_data(self)
         xs = list(xs)
         ys = list(ys)
 
         insertInds = np.searchsorted(self.frames, track.frames)
-        newxs, newys = track.obj.get_data()
+        newxs, newys = Line2D.get_data(track)
 
         # Going in reverse so that the insertInds values are valid
         for ind, feat, frame, newx, newy in reversed(zip(insertInds,
@@ -207,8 +228,8 @@ class Track(object) :
             self._bookkeeping(feat)
             feat.mark_associated(True)
 
-        self.obj.set_zorder(max(self.frames) + 1)
-        self.obj.set_data(xs, ys)
+        self.set_zorder(max(self.frames) + 1)
+        self.set_data(xs, ys)
 
 
     def update_frame(self, frameNum) :
@@ -218,11 +239,11 @@ class Track(object) :
         Useful when the Feature object gets an updated center location.
         """
         index = self.frames.index(frameNum)
-        xs, ys = self.obj.get_data()
+        xs, ys = Line2D.get_data(self)
         x, y = self.features[index].center()
         xs[index] = x
         ys[index] = y
-        self.obj.set_data(xs, ys)
+        self.set_data(xs, ys)
 
     def remove_feature(self, feature) :
         """
@@ -231,7 +252,7 @@ class Track(object) :
         occured already.
         """
         index = self.features.index(feature)
-        xs, ys = self.obj.get_data()
+        xs, ys = Line2D.get_data(self)
         xs = list(xs)
         ys = list(ys)
         xs.pop(index)
@@ -242,7 +263,7 @@ class Track(object) :
         # Reset the face color to indicate that this feature is no longer
         # associated with a track
         feature.mark_associated(False)
-        self.obj.set_data(xs, ys)
+        self.set_data(xs, ys)
 
         # Only modify this if it refers to itself
         if feature.track is self :
@@ -256,7 +277,7 @@ class Track(object) :
         later.
         """
         index = self.features.index(feature)
-        xs, ys = self.obj.get_data()
+        xs, ys = Line2D.get_data(self)
         newTrack = Track(xs[index:], ys[index:], self.frames[index:])
         for feat in self.features[index:] :
             feat.track = newTrack
@@ -264,13 +285,13 @@ class Track(object) :
 
         self.frames = self.frames[:index]
         self.features = self.features[:index]
-        self.obj.set_data(xs[:index], ys[:index])
+        self.set_data(xs[:index], ys[:index])
 
         return newTrack
 
-    def remove(self) :
-        if self.obj is not None :
-            self.obj.remove()
+    #def remove(self) :
+    #    if self.obj is not None :
+    #        self.obj.remove()
 
 
 class StateManager(object) :
@@ -786,26 +807,30 @@ class Feature(object) :
                 discard = self.objects.pop(key)
                 discard.remove()
 
-    def select(self, recurse_selection=False) :
+    def select(self, recurse_selection=False, alsotrack=True) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_edgecolor('w')
 
         if self.track is not None :
-            self.track.select()
+            if alsotrack :
+                self.track.select()
+
             if recurse_selection :
                 for feat in self.track.features :
                     # Need to set recurse_selection to False
                     # to prevent infinite recursion
                     feat.select(False)
 
-    def deselect(self, recurse_selection=False) :
+    def deselect(self, recurse_selection=False, alsotrack=True) :
         for key, item in self.objects.iteritems() :
             if item is not None :
                 item.set_edgecolor(Feature.orig_colors.get(key, 'k'))
 
         if self.track is not None :
-            self.track.deselect()
+            if alsotrack :
+                self.track.deselect()
+
             if recurse_selection :
                 for feat in self.track.features :
                     # Need to pass recurse_selection=False
@@ -881,8 +906,8 @@ class TM_ControlSys(BaseControlSys) :
                         ax.add_artist(obj)
 
         for track in self.state._tracks :
-            track.obj.set_visible(True)
-            ax.add_artist(track.obj)
+            track.set_visible(True)
+            ax.add_artist(track)
 
         self._show_features = False
         self._do_save = True
@@ -896,6 +921,7 @@ class TM_ControlSys(BaseControlSys) :
 
         # Connect the mouse-button event to the canvas
         fig.canvas.mpl_connect('button_press_event', self.onpress)
+        fig.canvas.mpl_connect('pick_event', self.onpick)
 
         # TODO: Add to keymap
         self.keymap['+'] = {'func': self.increm_feature_alpha,
@@ -945,7 +971,25 @@ class TM_ControlSys(BaseControlSys) :
         """
         Track picker handler
         """
-        pass
+        if self.fig.canvas.widgetlock.locked() :
+            return
+
+        if self._mode != 's' :
+            return True
+
+        if not isinstance(event.artist, Track) :
+            return False
+
+        # Toggle selection
+        if not event.artist.selected :
+            event.artist.select(alsofeatures=self._full_track_hilite)
+        else :
+            event.artist.deselect(alsofeatures=self._full_track_hilite)
+
+        self.fig.canvas.draw_idle()
+
+        return True
+
 
     def do_save_results(self) :
         return self._do_save
@@ -958,14 +1002,18 @@ class TM_ControlSys(BaseControlSys) :
         Creation of the contour polygon, which selects the initial
         region for watershed clustering.
         """
-        newPoly = StateManager._new_polygon(verts)
-        newFeat = Feature(self.rd.frameIndex, contour=newPoly)
-        self.state.add_feature(newFeat)
-        self.fig.canvas.draw_idle()
+        # Throw out lassos formed by accidential clicks
+        if len(verts) > 2 :
+            newPoly = StateManager._new_polygon(verts)
+            newFeat = Feature(self.rd.frameIndex, contour=newPoly)
+            self.state.add_feature(newFeat)
+            self.ax.add_artist(newPoly)
+            self.fig.canvas.draw_idle()
+
         self.fig.canvas.widgetlock.release(self._curr_lasso)
         del self._curr_lasso
         self._curr_lasso = None
-        self.ax.add_artist(newPoly)
+
 
     def lasso_selection(self, verts) :
         """
@@ -973,15 +1021,17 @@ class TM_ControlSys(BaseControlSys) :
 
         Such a selection can only be used for deletion
         """
-        self.select_group(verts)
+        # Throw out lassos formed by accidential clicks
+        if len(verts) > 2 :
+            self.select_group(verts)
 
-        if self._group_polygon is not None :
-            self._group_polygon.remove()
+            if self._group_polygon is not None :
+                self._group_polygon.remove()
 
-        self._group_polygon = Polygon(verts, fc='None', visible=True)
-        self.ax.add_artist(self._group_polygon)
+            self._group_polygon = Polygon(verts, fc='None', visible=True)
+            self.ax.add_artist(self._group_polygon)
+            self.fig.canvas.draw_idle()
 
-        self.fig.canvas.draw_idle()
         self.fig.canvas.widgetlock.release(self._curr_lasso)
         del self._curr_lasso
         self._curr_lasso = None
@@ -1019,7 +1069,6 @@ class TM_ControlSys(BaseControlSys) :
             if inside :
                 self._group_selection.append(feat)
                 feat.select()
-
 
     def onpress(self, event) :
         """
@@ -1079,7 +1128,7 @@ class TM_ControlSys(BaseControlSys) :
                                                             self._assoc_mode)
 
                         if tmp is not None :
-                            self.ax.add_artist(tmp.obj)
+                            self.ax.add_artist(tmp)
 
                     prev_select.deselect(self._full_track_hilite)
 
