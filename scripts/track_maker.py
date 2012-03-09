@@ -1509,24 +1509,35 @@ class TM_ControlSys(BaseControlSys) :
                         # Return alpha to normal
                         feat.set_alpha(1.0)
 
-    def step_back(self) :
-        lastFrame = self.rd.frameIndex
-        BaseControlSys.step_back(self)
-
+    def _update_display(self, lastFrame) :
+        """
+        If the current frame is different from *lastFrame*,
+        update the display and perform appropriate actions.
+        """
         if lastFrame != self.rd.frameIndex :
             self.update_frame(lastFrame, hold_recluster=True)
             if self._mode == 'S' :
                 self.select_group()
+
+    def step_back(self) :
+        lastFrame = self.rd.frameIndex
+        BaseControlSys.step_back(self)
+        self._update_display(lastFrame)
 
     def step_forward(self) :
         lastFrame = self.rd.frameIndex
         BaseControlSys.step_forward(self)
+        self._update_display(lastFrame)
 
-        if lastFrame != self.rd.frameIndex :
-            self.update_frame(lastFrame, hold_recluster=True)
-            if self._mode == 'S' :
-                self.select_group()
+    def jump_forward(self, increm) :
+        lastFrame = self.rd.frameIndex
+        BaseControlSys.jump_forward(self, increm)
+        self._update_display(lastFrame)
 
+    def jump_to(self, index) :
+        lastFrame = self.rd.frameIndex
+        BaseControlSys.jump_to(self, index)
+        self._update_display(lastFrame)
 
 def AnalyzeRadar(volume, tracks, falarms, polygons, radarFiles,
                  useOldTransform=False) :
@@ -1750,7 +1761,7 @@ def SortVolume(volumes) :
 
 def SaveState(paramFile, params, volumeFile, volume,
               origTrackFile, filtTrackFile, tracks, falarms,
-              polygonfile, polygons) :
+              polygonfile=None, polygons=None) :
     # Do I need to update the Params?
     volume['volume_data'] = SortVolume(volume['volume_data'])
     params['times'] = [aVol['volTime'] for aVol in volume['volume_data']]
@@ -1761,8 +1772,9 @@ def SaveState(paramFile, params, volumeFile, volume,
     TrackFileUtils.SaveTracks(origTrackFile, tracks, falarms)
     TrackFileUtils.SaveTracks(filtTrackFile, tracks, falarms)
 
-    # TODO: Save polygons in a better format
-    dump(polygons, open(polygonfile, 'wb'))
+    if polygonfile is not None :
+        # TODO: Save polygons in a better format
+        dump(polygons, open(polygonfile, 'wb'))
 
 
 if __name__ == '__main__' :
