@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Circle, Polygon
 from matplotlib.lines import Line2D
 from matplotlib.widgets import Lasso
-from matplotlib.nxutils import points_inside_poly
+#from matplotlib.nxutils import points_inside_poly
 #from mpl_toolkits.basemap import Basemap
 
 import ZigZag.TrackFileUtils as TrackFileUtils
@@ -457,8 +457,8 @@ class StateManager(object) :
                 # We know nothing!
                 volTimes = np.array([])
 
-        gridx_grads = np.gradient(xs)
-        gridy_grads = np.gradient(ys)
+        #gridx_grads = np.gradient(xs)
+        #gridy_grads = np.gradient(ys)
 
         # dictionary with "volume_data", "frameCnt", "corner_filestem"
         #    and "volume_data" contains a list of dictionaries with
@@ -496,10 +496,11 @@ class StateManager(object) :
 
                 if (not quicksave and np.isnan(feat.area()) and
                     ('contour' in feat.objects)) :
-                    feat.feat_area = Feature.calc_area_polygon(xs, ys,
-                                                               feat.get_xy(),
-                                                               gridx_grads,
-                                                               gridy_grads)
+                    feat.feat_area = feat.calc_area()
+                    #feat.feat_area = Feature.calc_area_polygon(xs, ys,
+                    #                                           feat.get_xy(),
+                    #                                           gridx_grads,
+                    #                                           gridy_grads)
 
 
                 if feat.track is None or len(feat.track) < 2 :
@@ -751,6 +752,24 @@ class Feature(object) :
 
         return np.nan
 
+    def calc_area(self):
+        """
+        Calculate an approximate area in square km of a Feature.
+
+        """
+        vs = self.get_xy()
+        N = len(vs)
+        vs = np.deg2rad(vs)
+        if N < 3 :
+            return 0.0
+
+        RadSq = 6371.0**2
+        area = 0.0
+        area -= ((vs[1, 0] - vs[-2, 0]) * np.sin(vs[0, 1]))
+        for i in xrange(1, N - 1):
+            area -= ((vs[i + 1, 0] - vs[i - 1, 0]) * np.sin(vs[i, 1]))
+        return 0.5 * RadSq * area
+
     @staticmethod
     def calc_area_mask(featMask, dxdj, dxdi, dydj, dydi) :
         """
@@ -885,6 +904,7 @@ class TM_ControlSys(BaseControlSys) :
 
         self.ax = ax
         self._curr_selection = None
+        self._prev_selection = None
         self._ref_lon = lon
         self._ref_lat = lat
         self._group_selection = []
@@ -956,11 +976,14 @@ class TM_ControlSys(BaseControlSys) :
         self.keymap['p'] = {'func': self.print_selection,
                             'help': "Display info on the current selection"}
         self.keymap['P'] = {'func': self.toggle_hilite_track,
-                            'help': "Toggle highlighting all features for"\
+                            'help': "Toggle highlighting all features for"
                                     " the current selected track"}
         self.keymap['H'] = {'func': self.temp_hide_selection,
-                            'help': "Hold 'H' to temporarially hide the"\
+                            'help': "Hold 'H' to temporarially hide the"
                                     " the current selection"}
+        self.keymap['l'] = {'func': self.linkup,
+                            'help': "Link the last created feature with the"
+                                    " current selection."}
 
 
         self._clean_mplkeymap()
@@ -1008,7 +1031,16 @@ class TM_ControlSys(BaseControlSys) :
             newFeat = Feature(self.rd.frameIndex, contour=newPoly)
             self.state.add_feature(newFeat)
             self.ax.add_artist(newPoly)
+
+            self._prev_selection = self._curr_selection
+            self._curr_selection = newFeat
+            if self._prev_selection is not None:
+                self._prev_selection.deselect(self._full_track_hilite)
+
+            self._curr_selection.select(self._full_track_hilite)
+
             self.fig.canvas.draw_idle()
+
 
         self.fig.canvas.widgetlock.release(self._curr_lasso)
         del self._curr_lasso
@@ -1115,30 +1147,51 @@ class TM_ControlSys(BaseControlSys) :
                     curr_select = feat
             prev_select = self._curr_selection
 
-            if curr_select is not None :
-                if prev_select is not None :
-                    # This is only valid if I am able to see the previous
-                    # selection. This logic also makes it impossible to
-                    # have feat1 be the same object as feat2
-                    if (prev_select.get_visible() and
-                        self.rd.frameIndex != prev_select.frame) :
-                        # Perform an association action across frames!
-                        tmp = self.state.associate_features(prev_select,
-                                                            curr_select,
-                                                            self._assoc_mode)
-
-                        if tmp is not None :
-                            self.ax.add_artist(tmp)
-
-                    prev_select.deselect(self._full_track_hilite)
-
-                if prev_select is curr_select :
+            if curr_select is not None:
+                # Deselection of the current selection. Don't change the
+                # original previous selection.
+                if prev_select is curr_select:
                     self._curr_selection = None
-                else :
+                else:
                     self._curr_selection = curr_select
                     curr_select.select(self._full_track_hilite)
+                    self._prev_selection = prev_select
+
+                # Only perform the linkup in this mode if
+                # all features are visible.
+                if self._show_features:
+                    self.linkup()
+
+                # This works right in either case of prev_select
+                # being the same as curr_select or not.
+                if prev_select is not None:
+                    prev_select.deselect(self._full_track_hilite)
 
                 self.fig.canvas.draw_idle()
+
+    def linkup(self):
+        """
+        Perform a linkup with the current selection and the previous
+        selection.
+
+        """
+        if (self._curr_selection is not None
+                and self._prev_selection is not None):
+            # This logic makes it impossible to
+            # have feat1 be the same object as feat2 and to prevent
+            # linking up two features in the same frame.
+            # Also, we want to make sure that the linkup happens
+            # only for when we are on the same frame as the current
+            # selection.
+            if (self._curr_selection.frame != self._prev_selection.frame and
+                    self._curr_selection.frame == self.rd.frameIndex):
+                # Perform an association action across frames!
+                tmp = self.state.associate_features(self._prev_selection,
+                                                    self._curr_selection,
+                                                    self._assoc_mode)
+
+                if tmp is not None:
+                    self.ax.add_artist(tmp)
 
     def increm_feature_alpha(self) :
         self._alphaScale = min(100.0, self._alphaScale * 2)
@@ -1155,7 +1208,7 @@ class TM_ControlSys(BaseControlSys) :
     def clear_frame(self) :
         # Completely remove the features for this frame
         if (self._curr_selection is not None and
-            self._curr_selection.frame == self.rd.frameIndex) :
+                self._curr_selection.frame == self.rd.frameIndex) :
             self._curr_selection.deselect(self._full_track_hilite)
             self._curr_selection = None
 
@@ -1172,7 +1225,7 @@ class TM_ControlSys(BaseControlSys) :
     def delete_feature(self) :
         # Delete the currently selected artist (if in the current frame)
         if (self._curr_selection is not None and
-            self._curr_selection.frame == self.rd.frameIndex) :
+                self._curr_selection.frame == self.rd.frameIndex) :
             self._curr_selection.deselect(self._full_track_hilite)
             self._curr_selection.remove()
             self.state.remove_feature(self._curr_selection)
