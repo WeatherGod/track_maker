@@ -10,7 +10,7 @@ setup(
     license = "BSD",
     keywords = "track analysis",
     url = "https://github.com/WeatherGod/track_maker",
-    scripts = ['scripts/track_maker.py', 'scripts/sync_scenario.py'],
+    scripts = ['scripts/track_maker.py'],
     install_requires = ['numpy', 'BRadar', 'matplotlib', 'scipy', 'ZigZag',],
     )
 
